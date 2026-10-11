@@ -10,9 +10,9 @@ sequenceDiagram
 
     app->>bff: GET /bff-mobile/v1/ppob/catalogues?page&size (Bearer JWT)
     bff->>bff: validate JWT
-    bff->>ppob: GET /api/v1/ppob/catalogues?page&size
-    ppob-->>bff: catalogues (active/visible only, ordered)
-    bff-->>app: 200 OK catalogues[]
+    bff->>ppob: GET /api/v1/ppob/catalogues?page&size&orderBy=order ASC
+    ppob-->>bff: catalogues (active/visible only, ordered, audit fields included)
+    bff-->>app: 200 OK catalogues[] (audit fields stripped)
     Note over app: on tap a catalogue → story 02/03
 ```
 
@@ -21,12 +21,12 @@ sequenceDiagram
 | # | Caller | Callee | Call | Sync/Async | Reference |
 | --- | --- | --- | --- | --- | --- |
 | 1 | mobile-app | bff-mobile | `GET /bff-mobile/v1/ppob/catalogues?page&size` (Bearer JWT) | Sync | `api/applications/bff-mobile.md#list-catalogues` |
-| 2 | bff-mobile | ppob-service | `GET /api/v1/ppob/catalogues?page&size` | Sync | `api/applications/ppob-service.md#list-catalogues` |
+| 2 | bff-mobile | ppob-service | `GET /api/v1/ppob/catalogues?page&size&orderBy=order ASC` | Sync | `api/applications/ppob-service.md#list-catalogues` |
 
 ## Data Passed Between Steps
 
-- Step 1 → 2: after JWT validation, no customer-specific input is needed; `bff-mobile` forwards the request as-is (catalogue config is global, not per-user).
-- Step 2 → 1: `ppob-service` returns only catalogues with `isActive = true` (soft-delete filtered, ordered by `order`), each including `catalogueType` (the identifier used in every downstream path segment — no id mapping in the BFF); paginated at the microservice (`page`, `size`, `totalRows`, `totalPage`, `data`); `bff-mobile` passes the paginated `result` through unchanged.
+- Step 1 → 2: after JWT validation, no customer-specific input is needed; `bff-mobile` forwards the request and injects the screen's fixed ordering (`orderBy=order ASC` — microservices have no default order; the app cannot supply `orderBy`).
+- Step 2 → 1: `ppob-service` returns only catalogues with `isActive = true` (soft-delete filtered, ordered per the injected `orderBy`), each including `catalogueType` (the identifier used in every downstream path segment — no id mapping in the BFF); paginated at the microservice (`page`, `size`, `totalRows`, `totalPage`, `data`); `bff-mobile` strips the audit fields (passes `isActive` only) and passes the paginated `result` through.
 
 ## Failure & Consistency Behavior
 

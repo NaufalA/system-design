@@ -15,9 +15,9 @@ sequenceDiagram
     ll->>ppob: product feed sync
 
     app->>bff: GET /bff-mobile/v1/ppob/catalogues/electricity-token/products?page&size
-    bff->>ppob: GET /api/v1/ppob/catalogues/electricity-token/products?page&size
+    bff->>ppob: GET /api/v1/ppob/catalogues/electricity-token/products?page&size&orderBy=displayOrder ASC
     ppob-->>bff: products (base feed price + admin override, active only, unfiltered)
-    bff-->>app: 200 OK result.data[]
+    bff-->>app: 200 OK result.data[] (audit fields stripped)
     Note over app: list rendered immediately, customer enters meter number
 
     app->>bff: POST /bff-mobile/v1/ppob/catalogues/electricity-token/identify { customerId }
@@ -35,7 +35,7 @@ sequenceDiagram
 | # | Caller | Callee | Call | Sync/Async | Reference |
 | --- | --- | --- | --- | --- | --- |
 | 1 | mobile-app | bff-mobile | `GET /bff-mobile/v1/ppob/catalogues/electricity-token/products?page&size` (on screen open) | Sync | `api/applications/bff-mobile.md#list-products` |
-| 2 | bff-mobile | ppob-service | `GET /api/v1/ppob/catalogues/electricity-token/products?page&size` | Sync | `api/applications/ppob-service.md#list-products` |
+| 2 | bff-mobile | ppob-service | `GET /api/v1/ppob/catalogues/electricity-token/products?page&size&orderBy=displayOrder ASC` | Sync | `api/applications/ppob-service.md#list-products` |
 | 3 | mobile-app | bff-mobile | `POST /bff-mobile/v1/ppob/catalogues/electricity-token/identify` body `{ customerId }` (when customer enters the meter number) | Sync | `api/applications/bff-mobile.md#identify-customer` |
 | 4 | bff-mobile | ppob-service | `POST /api/v1/ppob/identifyMeter` body `{ meterNumber }` (routed by first part `electricity`) | Sync | `api/applications/ppob-service.md#identify-meter` |
 | 5 | ppob-service | Letslink | Customer/meter validation (external REST) | Sync | `api/applications/ppob-service.md#resources-used` |
@@ -43,8 +43,8 @@ sequenceDiagram
 
 ## Data Passed Between Steps
 
-- Step 1 → 2: `catalogueType` path segment passed through verbatim (no id mapping); `bff-mobile` forces active-only (never forwards `showInactive`).
-- Step 2 → 1: microservice-paginated `result` (`page`, `size`, `totalRows`, `totalPage`, `data`); `bff-mobile` passes it through. All active products are returned regardless of wattage — **never filtered** (price is identical per product; wattage determines the token value minted at fulfillment, visible only post-purchase).
+- Step 1 → 2: `catalogueType` path segment passed through verbatim (no id mapping); `bff-mobile` forces active-only (never forwards `showInactive`) and injects the screen's fixed ordering (`orderBy=displayOrder ASC` — microservices have no default order; the app cannot supply `orderBy`).
+- Step 2 → 1: microservice-paginated `result` (`page`, `size`, `totalRows`, `totalPage`, `data`); `bff-mobile` strips the audit fields (passes `isActive` only) and passes it through. All active products are returned regardless of wattage — **never filtered** (price is identical per product; wattage determines the token value minted at fulfillment, visible only post-purchase).
 - Step 3 → 4: BFF routes on the first part of `catalogueType` (`electricity` → meter identification) and translates `customerId` → typed `meterNumber`.
 - Step 5 → 3: `ppob-service` returns the identify core `{ valid, identifierType: METER_NUMBER, customerId, details: { customerName, wattage, meterSpecs } }`; `bff-mobile` adds `catalogueType` and passes through. `wattage` is **carried into checkout (story 04) and passed to Letslink at purchase** — it does not filter the list.
 

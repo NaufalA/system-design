@@ -58,7 +58,7 @@ Returns the customer-facing catalogue list, active-only, paginated.
 **Flow**
 
 1. Validate JWT → invalid/expired → `401` (downstream not called).
-2. Forward `page`/`size` to `ppob-service` `GET /api/v1/ppob/catalogues` — active-only is forced (`showInactive` is never forwarded).
+2. Forward `page`/`size` to `ppob-service` `GET /api/v1/ppob/catalogues` with the screen's ordering injected as `orderBy=order ASC` — active-only is forced (`showInactive` is never forwarded).
 3. Return the upstream paginated `result` unchanged.
 4. Upstream unavailable/5xx → `503 UPSTREAM_UNAVAILABLE`.
 
@@ -66,14 +66,14 @@ Returns the customer-facing catalogue list, active-only, paginated.
 
 | Query params | Type | Default | Notes |
 | --- | --- | --- | --- |
-| page | int | 0 | 0-based page index |
+| page | int | 1 | 1-based page index |
 | size | int | 20 | Page size |
 
-_No path params. No request body. No `showInactive` — customers only ever see active items._
+_No path params. No request body. No `showInactive` (customers only ever see active items) and no `orderBy` — this screen's ordering is fixed and injected by the BFF._
 
 **Response**
 
-`result` is the paginated shape (`page`, `size`, `totalRows`, `totalPage`, `data[]`); each catalogue item:
+`result` is the paginated shape (`page`, `size`, `totalRows`, `totalPage`, `data[]`); each catalogue item (upstream audit fields stripped — only `isActive` is passed through):
 
 | Field | Type | Notes |
 | --- | --- | --- |
@@ -81,11 +81,12 @@ _No path params. No request body. No `showInactive` — customers only ever see 
 | name | string | Display name |
 | icon | string | Icon URL |
 | order | int | Sort position (ascending) |
+| isActive | bool | Always `true` here |
 
 **Example**
 
 ```
-GET /bff-mobile/v1/ppob/catalogues?page=0&size=20
+GET /bff-mobile/v1/ppob/catalogues?page=1&size=20
 ```
 
 ```json
@@ -93,7 +94,7 @@ GET /bff-mobile/v1/ppob/catalogues?page=0&size=20
   "response": 200,
   "message": "Catalogues retrieved successfully",
   "result": {
-    "page": 0,
+    "page": 1,
     "size": 20,
     "totalRows": 2,
     "totalPage": 1,
@@ -102,13 +103,15 @@ GET /bff-mobile/v1/ppob/catalogues?page=0&size=20
         "catalogueType": "electricity-token",
         "name": "Electricity Token",
         "icon": "https://cdn.example/ppob/electricity.svg",
-        "order": 1
+        "order": 1,
+        "isActive": true
       },
       {
         "catalogueType": "mobile-data",
         "name": "Mobile Data",
         "icon": "https://cdn.example/ppob/data.svg",
-        "order": 2
+        "order": 2,
+        "isActive": true
       }
     ]
   }
@@ -248,7 +251,7 @@ Returns the active products of one catalogue, paginated. Filtering is per catalo
 
 1. Validate JWT → invalid/expired → `401` (downstream not called).
 2. Validate params for the catalogue: `mobile-data` → `providerCode` required, missing → `400`; `electricity-token` → no filter params. (The same rule is enforced by `ppob-service` — an unfiltered data list is never served.)
-3. Forward `page`/`size` (+ `providerCode`) to `ppob-service` `GET /api/v1/ppob/catalogues/{catalogueType}/products` — active-only is forced (`showInactive` is never forwarded).
+3. Forward `page`/`size` (+ `providerCode`) to `ppob-service` `GET /api/v1/ppob/catalogues/{catalogueType}/products` with the feed display order injected as `orderBy=displayOrder ASC` — active-only is forced (`showInactive` is never forwarded).
 4. Return the upstream paginated `result`.
 5. Upstream unavailable/5xx → `503 UPSTREAM_UNAVAILABLE`; upstream `404` (unknown catalogue) → passed through.
 
@@ -260,15 +263,15 @@ Returns the active products of one catalogue, paginated. Filtering is per catalo
 
 | Query params | Type | Default | Notes |
 | --- | --- | --- | --- |
-| page | int | 0 | 0-based page index |
+| page | int | 1 | 1-based page index |
 | size | int | 20 | Page size |
 | providerCode | string | — | **Required for `mobile-data`** (`400` without it; value comes from the identify response). Not applicable to `electricity-token` |
 
-_No request body. No `showInactive`._
+_No request body. No `showInactive`. No `orderBy` — this screen's ordering is fixed and injected by the BFF._
 
 **Response**
 
-`result` is the paginated shape (`page`, `size`, `totalRows`, `totalPage`, `data[]`); each product item:
+`result` is the paginated shape (`page`, `size`, `totalRows`, `totalPage`, `data[]`); each product item (upstream audit fields stripped — only `isActive` is passed through):
 
 | Field | Type | Notes |
 | --- | --- | --- |
@@ -279,12 +282,13 @@ _No request body. No `showInactive`._
 | denomination | int | `electricity-token` only — nominal token value (IDR) |
 | packageSize | string | `mobile-data` only — package size/duration (e.g. `10 GB`) |
 | price | int | Sale price (admin override applied over the Letslink base) |
+| displayOrder | int | Feed display order (ascending) — the BFF-injected ordering basis |
 | isActive | bool | Always `true` for customers |
 
 **Example**
 
 ```
-GET /bff-mobile/v1/ppob/catalogues/electricity-token/products?page=0&size=20
+GET /bff-mobile/v1/ppob/catalogues/electricity-token/products?page=1&size=20
 ```
 
 ```json
@@ -292,7 +296,7 @@ GET /bff-mobile/v1/ppob/catalogues/electricity-token/products?page=0&size=20
   "response": 200,
   "message": "Products retrieved successfully",
   "result": {
-    "page": 0,
+    "page": 1,
     "size": 20,
     "totalRows": 1,
     "totalPage": 1,
@@ -304,6 +308,7 @@ GET /bff-mobile/v1/ppob/catalogues/electricity-token/products?page=0&size=20
         "operator": "PLN",
         "denomination": 200000,
         "price": 205000,
+        "displayOrder": 1,
         "isActive": true
       }
     ]
@@ -312,7 +317,7 @@ GET /bff-mobile/v1/ppob/catalogues/electricity-token/products?page=0&size=20
 ```
 
 ```
-GET /bff-mobile/v1/ppob/catalogues/mobile-data/products?providerCode=TSEL&page=0&size=20
+GET /bff-mobile/v1/ppob/catalogues/mobile-data/products?providerCode=TSEL&page=1&size=20
 ```
 
 ```json
@@ -320,7 +325,7 @@ GET /bff-mobile/v1/ppob/catalogues/mobile-data/products?providerCode=TSEL&page=0
   "response": 200,
   "message": "Products retrieved successfully",
   "result": {
-    "page": 0,
+    "page": 1,
     "size": 20,
     "totalRows": 1,
     "totalPage": 1,
@@ -332,6 +337,7 @@ GET /bff-mobile/v1/ppob/catalogues/mobile-data/products?providerCode=TSEL&page=0
         "operator": "Telkomsel",
         "packageSize": "10 GB",
         "price": 115000,
+        "displayOrder": 1,
         "isActive": true
       }
     ]

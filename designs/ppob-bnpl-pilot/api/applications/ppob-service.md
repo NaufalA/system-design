@@ -48,7 +48,7 @@ Internal only — no public exposure. Consumed over the internal network by `bff
 
 `GET /api/v1/ppob/catalogues`
 
-Returns the active, visible catalogues, ordered by `order`, paginated.
+Returns the active, visible catalogues, paginated.
 
 | | |
 | --- | --- |
@@ -57,8 +57,8 @@ Returns the active, visible catalogues, ordered by `order`, paginated.
 
 **Flow**
 
-1. Read catalogue configuration; keep only rows with `isActive = true` (`showInactive=true` relaxes the filter for admin-originated calls).
-2. Sort by `order` ascending.
+1. Read catalogue configuration; keep only rows with `isActive = true` (`showInactive=true` includes inactive rows as well — honored unconditionally; caller-type restrictions are enforced by the calling BFF).
+2. Apply `orderBy` if supplied (e.g. `order ASC`); no default order — database order when `orderBy` is omitted.
 3. Slice `page`/`size`; compute `totalRows` and `totalPage`.
 4. Return the wrapper with the paginated `result`.
 
@@ -66,9 +66,10 @@ Returns the active, visible catalogues, ordered by `order`, paginated.
 
 | Query params | Type | Default | Notes |
 | --- | --- | --- | --- |
-| page | int | 0 | 0-based page index |
+| page | int | 1 | 1-based page index |
 | size | int | 20 | Page size |
-| showInactive | bool | false | Honored only for admin-originated calls; forced `false` for customer-originated calls |
+| orderBy | string | — | Comma-separated `fieldName ORDER` (`ASC`\|`DESC`, required per entry), e.g. `order ASC,catalogueType ASC`; unknown field/malformed → `400`. No default order |
+| showInactive | bool | false | When `true`, inactive rows are included; honored unconditionally — which callers may pass it is a BFF-layer concern |
 
 _No path params. No request body._
 
@@ -81,13 +82,17 @@ _No path params. No request body._
 | catalogueType | string | The single catalogue identifier — path segment in every catalogue-scoped endpoint |
 | name | string | Display name |
 | icon | string | Icon URL |
-| order | int | Sort position (ascending) |
-| isActive | bool | Always `true` here — inactive/hidden catalogues are never returned on customer calls |
+| order | int | Admin-defined sort position (ascending) — applied only via `orderBy=order ASC` |
+| createdDate | string | ISO 8601 (timestamptz) |
+| updatedDate | string | ISO 8601 (timestamptz) |
+| createdBy | string | Actor (≤ 50 chars) |
+| updatedBy | string | Actor (≤ 50 chars) |
+| isActive | bool | `true` unless the row is soft-deleted (`false` rows appear only when `showInactive=true`) |
 
 **Example**
 
 ```
-GET /api/v1/ppob/catalogues?page=0&size=20
+GET /api/v1/ppob/catalogues?page=1&size=20&orderBy=order ASC
 ```
 
 ```json
@@ -95,7 +100,7 @@ GET /api/v1/ppob/catalogues?page=0&size=20
   "response": 200,
   "message": "Catalogues retrieved successfully",
   "result": {
-    "page": 0,
+    "page": 1,
     "size": 20,
     "totalRows": 1,
     "totalPage": 1,
@@ -105,6 +110,10 @@ GET /api/v1/ppob/catalogues?page=0&size=20
         "name": "Electricity Token",
         "icon": "https://cdn.example/ppob/electricity.svg",
         "order": 1,
+        "createdDate": "2026-10-01T03:00:00Z",
+        "updatedDate": "2026-10-05T07:15:00Z",
+        "createdBy": "admin.andi",
+        "updatedBy": "admin.andi",
         "isActive": true
       }
     ]
@@ -116,6 +125,7 @@ GET /api/v1/ppob/catalogues?page=0&size=20
 
 | Status | Case | message |
 | --- | --- | --- |
+| 400 | Unknown `orderBy` field or malformed entry | `BAD_REQUEST: invalid orderBy` |
 | 500 | Internal failure reading config | `INTERNAL: ...` |
 
 #### Get catalogue
@@ -132,8 +142,7 @@ Reads a single catalogue configuration by identifier.
 **Flow**
 
 1. Look up the catalogue by `catalogueType` → unknown → `404`.
-2. Disabled catalogue (`isActive = false`) with `showInactive=false` → `404` (same not-found behavior).
-3. Return the catalogue as `result`.
+2. Return the catalogue as `result` regardless of `isActive` (soft-deleted resources remain readable; only unknown identifiers 404).
 
 **Request**
 
@@ -141,15 +150,11 @@ Reads a single catalogue configuration by identifier.
 | --- | --- | --- |
 | catalogueType | string | Required. `404` if unknown |
 
-| Query params | Type | Default | Notes |
-| --- | --- | --- | --- |
-| showInactive | bool | false | When `true`, allows reading a disabled catalogue |
-
-_No request body._
+_No request body. No query params._
 
 **Response**
 
-`result` is one catalogue item with the same fields as [List catalogues](#list-catalogues) (`catalogueType`, `name`, `icon`, `order`, `isActive`).
+`result` is one catalogue item with the same fields as [List catalogues](#list-catalogues) (`catalogueType`, `name`, `icon`, `order`, `createdDate`, `updatedDate`, `createdBy`, `updatedBy`, `isActive`).
 
 **Example**
 
@@ -166,6 +171,10 @@ GET /api/v1/ppob/catalogues/electricity-token
     "name": "Electricity Token",
     "icon": "https://cdn.example/ppob/electricity.svg",
     "order": 1,
+    "createdDate": "2026-10-01T03:00:00Z",
+    "updatedDate": "2026-10-05T07:15:00Z",
+    "createdBy": "admin.andi",
+    "updatedBy": "admin.andi",
     "isActive": true
   }
 }
@@ -175,7 +184,7 @@ GET /api/v1/ppob/catalogues/electricity-token
 
 | Status | Case | message |
 | --- | --- | --- |
-| 404 | Unknown `catalogueType` (or disabled without `showInactive`) | `NOT_FOUND: catalogue does not exist` |
+| 404 | Unknown `catalogueType` | `NOT_FOUND: catalogue does not exist` |
 | 500 | Internal failure reading config | `INTERNAL: ...` |
 
 ### Resource: customer identification
@@ -325,7 +334,7 @@ Resolves a mobile number to its provider via an in-house prefix lookup against t
 
 `GET /api/v1/ppob/catalogues/{catalogueType}/products`
 
-Returns the products of one catalogue — Letslink feed base data with admin override (`price`, `isActive`) applied, sorted by display order, paginated. Filtering is per catalogue: `electricity-token` is never filtered (identical price for all; wattage handled at purchase by the provider backend), while `mobile-data` requires `providerCode` — an unfiltered data list is never served.
+Returns the products of one catalogue — Letslink feed base data with admin override (`price`, `isActive`) applied, paginated. Filtering is per catalogue: `electricity-token` is never filtered (identical price for all; wattage handled at purchase by the provider backend), while `mobile-data` requires `providerCode` — an unfiltered data list is never served.
 
 | | |
 | --- | --- |
@@ -338,8 +347,8 @@ Returns the products of one catalogue — Letslink feed base data with admin ove
 2. Apply the catalogue's filter rule:
    - `mobile-data` → `providerCode` required; missing → `400`.
    - `electricity-token` → no filter (`providerCode` ignored).
-3. Read the feed products for the catalogue; apply admin overrides (`price`, `isActive` → `hasOverride`); drop `isActive = false` rows unless `showInactive=true` (admin-originated calls only).
-4. Sort by display order; slice `page`/`size`; compute `totalRows` and `totalPage`.
+3. Read the feed products for the catalogue; apply admin overrides (`price`, `isActive` → `hasOverride`); drop `isActive = false` rows unless `showInactive=true` (honored unconditionally; caller-type restrictions are enforced by the calling BFF).
+4. Apply `orderBy` if supplied (e.g. `displayOrder ASC`); no default order — database order when `orderBy` is omitted. Slice `page`/`size`; compute `totalRows` and `totalPage`.
 5. Return the wrapper with the paginated `result`.
 
 **Request**
@@ -350,9 +359,10 @@ Returns the products of one catalogue — Letslink feed base data with admin ove
 
 | Query params | Type | Default | Notes |
 | --- | --- | --- | --- |
-| page | int | 0 | 0-based page index |
+| page | int | 1 | 1-based page index |
 | size | int | 20 | Page size |
-| showInactive | bool | false | Honored only for admin-originated calls; forced `false` for customer-originated calls |
+| orderBy | string | — | Comma-separated `fieldName ORDER` (`ASC`\|`DESC`, required per entry), e.g. `displayOrder ASC`; unknown field/malformed → `400`. No default order |
+| showInactive | bool | false | When `true`, inactive rows are included; honored unconditionally — which callers may pass it is a BFF-layer concern |
 | providerCode | string | — | **Required for `mobile-data`** (`400` without it). Ignored for `electricity-token`. Advisory only — re-derived server-side at purchase (never trusted to authorize a purchase) |
 
 _No request body._
@@ -372,12 +382,17 @@ _No request body._
 | basePrice | int | Letslink feed base price |
 | price | int | Sale price (override applied over `basePrice`) |
 | hasOverride | bool | Whether an admin override is active |
-| isActive | bool | Always `true` for customer calls; `false` rows only via admin calls with `showInactive` |
+| displayOrder | int | Feed display order (ascending) — the basis for `orderBy=displayOrder ASC` |
+| createdDate | string | ISO 8601 (timestamptz) — feed sync / override creation |
+| updatedDate | string | ISO 8601 (timestamptz) |
+| createdBy | string | Actor (≤ 50 chars) — caller-supplied at creation; `"system"` for feed-synced rows |
+| updatedBy | string | Actor (≤ 50 chars) — caller-supplied on override |
+| isActive | bool | `true` unless the row is soft-deleted (`false` rows appear only when `showInactive=true`) |
 
 **Example**
 
 ```
-GET /api/v1/ppob/catalogues/electricity-token/products?page=0&size=20
+GET /api/v1/ppob/catalogues/electricity-token/products?page=1&size=20&orderBy=displayOrder ASC
 ```
 
 ```json
@@ -385,7 +400,7 @@ GET /api/v1/ppob/catalogues/electricity-token/products?page=0&size=20
   "response": 200,
   "message": "Products retrieved successfully",
   "result": {
-    "page": 0,
+    "page": 1,
     "size": 20,
     "totalRows": 1,
     "totalPage": 1,
@@ -399,6 +414,11 @@ GET /api/v1/ppob/catalogues/electricity-token/products?page=0&size=20
         "basePrice": 200000,
         "price": 205000,
         "hasOverride": true,
+        "displayOrder": 1,
+        "createdDate": "2026-10-01T03:00:00Z",
+        "updatedDate": "2026-10-05T07:15:00Z",
+        "createdBy": "system",
+        "updatedBy": "admin.andi",
         "isActive": true
       }
     ]
@@ -407,7 +427,7 @@ GET /api/v1/ppob/catalogues/electricity-token/products?page=0&size=20
 ```
 
 ```
-GET /api/v1/ppob/catalogues/mobile-data/products?providerCode=TSEL&page=0&size=20
+GET /api/v1/ppob/catalogues/mobile-data/products?providerCode=TSEL&page=1&size=20
 ```
 
 ```json
@@ -415,7 +435,7 @@ GET /api/v1/ppob/catalogues/mobile-data/products?providerCode=TSEL&page=0&size=2
   "response": 200,
   "message": "Products retrieved successfully",
   "result": {
-    "page": 0,
+    "page": 1,
     "size": 20,
     "totalRows": 1,
     "totalPage": 1,
@@ -429,6 +449,11 @@ GET /api/v1/ppob/catalogues/mobile-data/products?providerCode=TSEL&page=0&size=2
         "basePrice": 110000,
         "price": 115000,
         "hasOverride": true,
+        "displayOrder": 1,
+        "createdDate": "2026-10-01T03:00:00Z",
+        "updatedDate": "2026-10-01T03:00:00Z",
+        "createdBy": "system",
+        "updatedBy": "system",
         "isActive": true
       }
     ]
@@ -441,5 +466,6 @@ GET /api/v1/ppob/catalogues/mobile-data/products?providerCode=TSEL&page=0&size=2
 | Status | Case | message |
 | --- | --- | --- |
 | 400 | `mobile-data`: `providerCode` not supplied | `BAD_REQUEST: providerCode is required` |
+| 400 | Unknown `orderBy` field or malformed entry | `BAD_REQUEST: invalid orderBy` |
 | 404 | Unknown/inactive `catalogueType` | `NOT_FOUND: catalogue does not exist` |
 | 500 | Internal failure | `INTERNAL: ...` |
