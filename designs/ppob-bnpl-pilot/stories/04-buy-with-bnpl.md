@@ -12,6 +12,7 @@ As a customer, I want to buy a PPOB product (electricity token or mobile data pa
 ## Acceptance Criteria
 
 - Checkout flow completes with: **balance check → draft order** → tenor selection → T&C checklist (incl. financing document acceptance) → transaction PIN → submit.
+- **Precondition:** customer identification (shared identify endpoint `POST /ppob/catalogues/{catalogueType}/identify`, `customerId` in — story 02: routed to `identifyMeter` via Letslink; story 03: routed to `identifyPhoneNumber`, in-house) has succeeded **explicitly before** the balance check and draft creation; the entered customer ID + identification result are carried into checkout. The identification is **re-run server-side** in the background chain before the Letslink purchase — the earlier client-facing result is never trusted.
 - The order is only forwarded to core system checks after PIN entry; no limit is reserved before that.
 - **Letslink deposit balance is checked first, before any draft order exists**; insufficient balance means no draft is ever created.
 - A **draft order** is created in `bnpl-service`, `sales-portal-service`, and `core-credit-service` when the checkout page is opened — unless an existing draft for this customer/product is resumed (story 05), in which case the existing draft is reused, not duplicated.
@@ -28,24 +29,25 @@ As a customer, I want to buy a PPOB product (electricity token or mobile data pa
 
 ## Happy Path
 
-1. Customer selects a product (story 02/03) and **enters the checkout page**:
+1. Customer selects a product (story 02/03) — identification already passed — and **enters the checkout page**:
    a. `bff-mobile` → `ppob-service` → Letslink: **deposit balance check**. Insufficient → error, checkout blocked, **no draft created**.
-   b. Balance OK → `bff-mobile` creates a **draft order**: `bnpl-service` → `sales-portal-service` → `core-credit-service` (chained). No limit reserved. The 1-day draft expiry starts.
+   b. Balance OK → `bff-mobile` creates a **draft order** carrying the customer ID + identification result: `bnpl-service` → `sales-portal-service` → `core-credit-service` (chained). No limit reserved. The 1-day draft expiry starts.
    (Resuming a draft from history — story 05 — skips draft creation but **re-runs the balance check**.)
-2. Customer selects an **installment tenor** (options from `core-credit-service`), enters purchase details (meter number or phone number).
+2. Customer selects an **installment tenor** (options from `core-credit-service`). Purchase details (meter number / phone number) were entered during identification (stories 02/03) and are shown for confirmation.
 3. Customer taps checkout → **order summary** with T&C acceptance checklist. One item requires opening the **financing document draft**; the customer accepts it inside that view, which marks the checklist item as accepted.
 4. Customer enters **transaction PIN** (validated by `bnpl-service`) → order is **submitted**; the 5-minute submitted expiry starts.
 5. **Background chain** (customer no longer waits; app polls history — story 05):
    a. `sales-portal-service` forwards the order → `core-credit-service`.
    b. `core-credit-service` runs credit eligibility + eKYC validation.
    c. Validation passed → `core-credit-service` checks hold status with `core-financing-service`; order is **held**; **BNPL limit is reserved/deducted** via `bnpl-service`.
-   d. `core-credit-service` → `bnpl-service` starts the PPOB transaction → `ppob-service` executes the **Letslink purchase** (synchronous), records PPOB transaction status (pending → delivered/failed) with the PPOB tx id referenced by `bnpl-service` and `sales-portal-service`.
+   d. `core-credit-service` → `bnpl-service` starts the PPOB transaction → `ppob-service` **re-identifies server-side** (`identifyMeter` → Letslink for electricity; `identifyPhoneNumber` in-house for data), then executes the **Letslink purchase** (synchronous), records PPOB transaction status (pending → delivered/failed) with the PPOB tx id referenced by `bnpl-service` and `sales-portal-service`.
    e. Success → `ppob-service` sends completion push via `notification-service` (story 08). Token code (electricity) visible in history (story 05).
 
 
 ## Error / Edge Cases
 
 - **Letslink failure** → `ppob-service` initiates unwind: refund BNPL limit + cancel order → `bnpl-service` → `sales-portal-service` → `core-credit-service` → hold released (`core-financing-service`); customer sees failure in history + failure notification (story 06).
+- **Server-side re-identification fails** in the background chain (meter now invalid, prefix mismatch) → treated like a purchase failure: `ppob-service` unwinds the same way (refund + cancel).
 - **Draft expiry (1 day)** or **manual cancel** → order cancelled through the chain; no refund needed (no limit touched yet); notification sent.
 - **Submitted expiry (5 min)** → auto-cancel only while still in `submitted` state; if the chain has begun processing, the timer does not fire (no cancel-vs-Letslink race).
 - **Insufficient Letslink balance** → blocked at entry before draft creation; for a resumed draft (story 05), checkout cannot proceed and the draft sits until expiry or manual cancel (customer informed).

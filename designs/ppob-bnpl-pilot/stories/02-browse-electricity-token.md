@@ -7,11 +7,16 @@ As a customer, I want to browse available electricity token products (operator, 
 ## Priority & Dependencies
 
 - Priority: P0
-- Depends on: story 01 (category selection is the entry), product feed synced from Letslink + admin overrides (story 07)
+- Depends on: story 01 (catalogue selection is the entry), product feed synced from Letslink + admin overrides (story 07)
 
 ## Acceptance Criteria
 
-- Selecting the Electricity category lists available token denominations with: operator/PLN, nominal value, **sale price** (admin override applied over the Letslink base price).
+- Selecting the Electricity catalogue **fetches the product list immediately** — no filter, no identification needed to browse (price is the same for all customers).
+- The screen also shows a **customer ID (meter number) input**; a **successful identification** is **mandatory before checkout** (before balance check + draft creation — story 04) but never blocks browsing the list.
+- Identification uses the shared identify endpoint (`POST /ppob/catalogues/{catalogueType}/identify`, `customerId` in) and is served by **Letslink through `ppob-service`**, returning the uniform identify core with **meter details including wattage** — shown to the customer as confirmation.
+- **All electricity products are shown regardless of wattage** — price is the same per product; wattage affects the **token value** (kWh) minted by the provider backend at fulfillment, which is only visible afterwards in the token code (story 05). The wattage is carried into checkout and passed to Letslink at purchase.
+- The list shows available token denominations with: operator/PLN, nominal value, **sale price** (admin override applied over the Letslink base price).
+- Identification is server-validated again inside the story 04 submission chain — the client-side result is never trusted.
 - Disabled products are not shown.
 - Prices reflect the latest admin override or feed sync immediately.
 - Empty/failed response shows a retryable error state.
@@ -19,19 +24,21 @@ As a customer, I want to browse available electricity token products (operator, 
 ## Actors & Trigger
 
 - Actor: customer
-- Trigger: customer taps the Electricity category (story 01)
+- Trigger: customer taps the Electricity catalogue (story 01)
 
 ## Happy Path
 
-1. Customer taps the Electricity category.
-2. `mobile-app` → `bff-mobile` requests the electricity catalog.
-3. `bff-mobile` → `ppob-service` reads the catalog: Letslink product feed (base) overlaid with admin overrides, filtered to visible/enabled products in this category.
-4. List rendered: operator, denomination, price.
-5. Customer selects a product → navigates to checkout (story 04). Customer may first enter the meter/customer number on the checkout page (input captured by `mobile-app`, passed at submission).
+1. Customer taps the Electricity catalogue → product list screen opens; the list is **fetched immediately** (`bff-mobile` → `ppob-service`: Letslink feed base + admin overrides, active products only, unfiltered).
+2. List rendered: operator, denomination, price. The screen also shows a **meter/customer ID input**.
+3. Customer enters the meter number → `mobile-app` → `bff-mobile` `POST /bff-mobile/v1/ppob/catalogues/electricity-token/identify { customerId }` (BFF routes on the first part `electricity` → internal `POST /api/v1/ppob/identifyMeter { meterNumber }` → Letslink).
+4. Letslink customer validation returns the identify core: customer identity + **wattage** in `details`. Identification success = checkout gate passed.
+5. Customer selects a product → navigates to checkout (story 04). The entered customer ID and identification result travel with the checkout (passed at draft creation/submit). Note: the same price yields a different token value depending on meter wattage — decided by the provider backend at fulfillment and shown after purchase (token code in story 05).
 
 ## Error / Edge Cases
 
-- All products in category disabled by admin → empty state ("temporarily unavailable").
+- **Identification fails / invalid meter** → error inline at the input; the **list stays visible** but checkout is blocked; customer can correct the ID and retry. Checkout never reached without `valid: true`.
+- **Letslink validation unavailable** → retryable error at the identify step (browsing still works; checkout cannot proceed).
+- All products in catalogue disabled by admin → empty state ("temporarily unavailable").
 - Feed sync stale/unavailable → serve last known catalog (admin overrides still applied); `ppob-service` refreshes periodically.
 - `ppob-service` unavailable → error state with retry.
 - Price changed by admin while customer is on the screen → checkout re-validates price server-side (story 04).
@@ -40,14 +47,15 @@ As a customer, I want to browse available electricity token products (operator, 
 
 | Component | Role in this story |
 | --- | --- |
-| mobile-app | Renders catalog, captures meter number input, navigates to checkout |
-| bff-mobile | Auth + aggregation endpoint for catalog |
-| ppob-service | Owns catalog (feed + overrides), serves filtered list |
+| mobile-app | Renders catalog on open, meter ID input (checkout gate), navigates to checkout |
+| bff-mobile | Auth; shared `identify` endpoint (routed to `identifyMeter`); catalog aggregation |
+| ppob-service | Owns catalog (feed + overrides); proxies customer identification to Letslink |
+| Letslink | Customer/meter validation (identity + meter specs) |
 
 ## Data
 
-- Reads: PPOB product catalog (base from Letslink feed + admin overrides), category configuration — owned by `ppob-service`
-- Writes: none (a background feed-sync refresh may update base data; not user-triggered)
+- Reads: PPOB product catalog (base from Letslink feed + admin overrides), catalogue configuration — owned by `ppob-service`; customer/meter validation — Letslink (external)
+- Writes: none by the customer (background feed-sync refresh only; identification is a read-only check)
 
 ## Derived API Interactions
 

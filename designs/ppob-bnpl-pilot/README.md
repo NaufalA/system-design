@@ -11,21 +11,28 @@ PPOB feature (electricity token, mobile data package) on the existing financing 
 | [stories/](stories/) | User stories (per story) |
 | [api/stories/](api/stories/) | API design per story |
 | [api/applications/](api/applications/) | API design per application (source of truth for endpoint contracts) |
+| [api/README.md](api/README.md) | **Global API conventions** (paths, wrapper, pagination, soft delete, auth, trust rule) — defined once, referenced by all API docs |
 
 ## Story List
 
 | ID | Actor | Goal | Priority |
 | --- | --- | --- | --- |
-| [01](stories/01-browse-categories.md) | Customer | View PPOB catalog categories and pick a product type (categories admin-configurable) | P0 |
+| [01](stories/01-browse-catalogues.md) | Customer | View PPOB catalogues and pick a product type (catalogues + `catalogueType` admin-configurable) | P0 |
 | [02](stories/02-browse-electricity-token.md) | Customer | Browse electricity token catalog (operator, denomination, price) | P0 |
 | [03](stories/03-browse-data-package.md) | Customer | Browse mobile data package catalog (provider, package, price) | P0 |
 | [04](stories/04-buy-with-bnpl.md) | Customer | Purchase with BNPL: draft order, tenor, T&C + financing doc acceptance, PIN, submit, background chain, result | P0 |
 | [05](stories/05-transaction-history.md) | Customer | View in-progress & completed PPOB transaction history (incl. token code) | P0 |
 | [06](stories/06-failed-purchase.md) | Customer | Handle failed purchase: refund visible, clear status | P0 |
-| [07](stories/07-admin-catalog-management.md) | Admin | Manage catalog categories + override product price/enablement | P1 |
+| [07](stories/07-admin-catalog-management.md) | Admin | Manage catalogues (`catalogueType` naming) + override product price/enablement | P1 |
 | [08](stories/08-completion-notification.md) | Customer | Receive push notification on completion (incl. auto-cancel) | P1 |
 
 ## Cross-story Notes
+
+- **API conventions live in [`api/README.md`](api/README.md)** — path scheme (BFF `/{short-name}/v1/...` screen-aligned vs microservice `/api/v1/...` AIP-based + deviations), response wrapper `{response, message, result}`, pagination `{page, size, totalRows, totalPage, data}`, soft delete (`isActive`/`showInactive`), auth layers, and the server-side re-validation trust rule. Do not restate them in other docs.
+
+- **Catalogues & `catalogueType`** — the PPOB product types ("categories") are **catalogues**, identified everywhere by one admin-configured value `catalogueType` (pilot: `electricity-token`, `mobile-data`; no separate id/code). Naming semantics: two parts, sharing the first part when catalogues handle the same customer identifier (`electricity-token` / `electricity-postpaid` → meter number). The first part drives BFF `/identify` routing — user-decided for the pilot, **kept open as a question** in [`00-overview.md`](00-overview.md).
+
+- **Customer ID identification is mandatory before checkout** — one shared BFF endpoint, `POST /bff-mobile/v1/ppob/catalogues/{catalogueType}/identify { customerId }`; `customerId` is interpreted per catalogue (first part `electricity` → meter number → `identifyMeter` via Letslink; `mobile` → phone number → `identifyPhoneNumber` in-house). Responses share a fixed core `{ valid, catalogueType, identifierType, customerId }` + typed `details` (see [`api/README.md`](api/README.md#identify-response-core)). The products list is **decoupled** from identification and behaviour is per catalogue: `electricity-token` fetches the list immediately on screen open (unfiltered — identical price for all; wattage determines the minted token value at fulfillment) but checkout requires a successful identification; `mobile-data` identifies first, then lists filtered by `providerCode` (never unfiltered — enforced server-side). Re-validation behavior per the trust rule.
 
 - **PPOB transactions are treated exactly like other BNPL orders** in the existing flow; `ppob-service` only adds the PPOB side.
 - **Balance check first** — Letslink deposit balance is checked before any draft order is created; insufficient balance means no draft exists.
