@@ -25,6 +25,7 @@ All endpoints, both layers:
 ```
 
 - `response` — numeric status code, mirrors the HTTP status.
+- Content type: all requests and responses are `application/json`.
 - `message` — on success, describes the action performed (`"Catalogues retrieved successfully"`); on failure, describes the error (style: `CODE: description`, e.g. `NOT_FOUND: catalogue does not exist`).
 - `result` — the actual payload; `null` on error.
 - HTTP status codes apply alongside the wrapper (401/404/5xx...).
@@ -56,7 +57,7 @@ Customer identification (stories 02/03) is exposed through **one shared BFF endp
 ## Auth
 
 - **BFF:** `Authorization: Bearer <JWT>` issued by `user-service`, validated at the BFF (signature, expiry, session revocation). Invalid token → `401` without calling downstream. Internal service endpoints are never exposed to the client.
-- **Microservices:** service-to-service only (internal network + service credentials; mechanism per company standard — mTLS or signed service tokens). No customer JWT reaches a microservice; BFFs pass the resolved internal user id where needed.
+- **Microservices:** service-to-service over the internal network with **mTLS** (client certificates per company PKI — transport layer only, no auth headers/tokens). No customer JWT reaches a microservice; BFFs pass the resolved internal user id where needed.
 
 ## Server-Side Re-validation (Trust Rule)
 

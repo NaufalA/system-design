@@ -1,13 +1,22 @@
 # API Design — bff-mobile
 
-Backend-for-frontend for `mobile-app`: authenticates the customer JWT, orchestrates PPOB browse/checkout flows, and aggregates data from backend services. Holds no PPOB business data.
+Backend-for-frontend for `mobile-app`: authenticates the customer JWT, orchestrates PPOB browse/checkout flows, and aggregates data from backend services. Holds no PPOB business data. Global conventions live in [`api/README.md`](../README.md).
 
-## Base URL & Auth
+## Base URL
 
-- Base URL: `https://<host>` (public, TLS only). Global conventions — path scheme, response wrapper, pagination, soft delete, auth, identify-response core, trust rule — are defined once in [`api/README.md`](../README.md); only this app's deltas follow.
-- Path delta (screen-aligned, all catalogue-scoped under the `catalogues` resource): catalogue list → `/ppob/catalogues`; per-catalogue product types → `/ppob/catalogues/{catalogueType}/identify` and `/ppob/catalogues/{catalogueType}/products`; checkout → `/ppob/checkout`; history → `/ppob/history`.
-- Auth: Bearer JWT validated per [`api/README.md`](../README.md#auth); this BFF additionally injects the resolved internal user id into downstream calls.
-- Content type: `application/json`
+Exposed to `mobile-app` through the **public API gateway**:
+
+`https://<gateway-host>/bff-mobile/v1/...`
+
+The gateway terminates TLS and routes `/bff-mobile/**` to this BFF; the path convention (`/bff-mobile/v1/...`) is unchanged behind it.
+
+## Auth
+
+- Issued by: `user-service` — the existing customer session JWT.
+- Credential: JWT.
+- Transport: `Authorization: Bearer <JWT>` header on every request — presented to the public API gateway and forwarded unchanged to this BFF.
+- Validation: at this BFF (the gateway only routes) — signature, expiry, session revocation; invalid/expired → `401` without calling any downstream service.
+- Downstream: the BFF resolves the internal user id and injects it into its service-to-service calls; the customer JWT is never forwarded to microservices.
 
 ## Resources
 
@@ -15,32 +24,69 @@ Backend-for-frontend for `mobile-app`: authenticates the customer JWT, orchestra
 
 | Resource | Description | Endpoints |
 | --- | --- | --- |
-| PPOB catalogues (view) | Customer-facing catalogue list, aggregated from `ppob-service` | `GET /bff-mobile/v1/ppob/catalogues` |
-| Customer identification | Shared identify step per catalogue — routes to `ppob-service`'s per-type method based on the first part of `catalogueType` | `POST /bff-mobile/v1/ppob/catalogues/{catalogueType}/identify` |
-| PPOB products (view) | Product catalog per catalogue (`electricity-token`, `mobile-data`), aggregated from `ppob-service` | `GET /bff-mobile/v1/ppob/catalogues/{catalogueType}/products` |
-| PPOB checkout orchestration | Draft creation, submission of a PPOB purchase (story 04) | _(defined with story 04)_ |
-| PPOB transaction history (view) | Order history aggregated from `sales-portal-service` + `ppob-service` (story 05) | _(defined with story 05)_ |
+| PPOB catalogues (view) | Customer-facing catalogue list | `GET /bff-mobile/v1/ppob/catalogues` |
+| Customer identification | Shared identify step for all catalogues — uniform identify core + `catalogueType` | `POST /bff-mobile/v1/ppob/catalogues/{catalogueType}/identify` |
+| PPOB products (view) | Product catalog per catalogue (`electricity-token`, `mobile-data`) | `GET /bff-mobile/v1/ppob/catalogues/{catalogueType}/products` |
+| PPOB checkout orchestration | Draft creation, submission of a PPOB purchase | _(defined with story 04)_ |
+| PPOB transaction history (view) | Order history aggregated from `sales-portal-service` + `ppob-service` | _(defined with story 05)_ |
 
 ### Resources used (consumed from other applications)
 
 | Resource | Owner application | How it's used | Derived from story |
 | --- | --- | --- | --- |
 | JWT authentication / session | user-service | Token validation for every inbound request (existing auth mechanism) | — |
-| PPOB catalogue configuration | ppob-service | Sync REST `GET /api/v1/ppob/catalogues` (`catalogueType` is passed through to the client — no id mapping) | 01 |
+| PPOB catalogue configuration | ppob-service | Sync REST `GET /api/v1/ppob/catalogues` (`catalogueType` passed through — no id mapping) | 01 |
 | PPOB product catalog | ppob-service | Sync REST `GET /api/v1/ppob/catalogues/{catalogueType}/products` | 02, 03 |
-| Meter identification | ppob-service | Sync REST `POST /api/v1/ppob/identifyMeter` (proxies Letslink) — called when the identify request's `catalogueType` starts with `electricity`; story 04's re-validation runs inside `ppob-service`, not through the BFF | 02 |
-| Phone number identification | ppob-service | Sync REST `POST /api/v1/ppob/identifyPhoneNumber` (in-house prefix lookup) — called when the identify request's `catalogueType` starts with `mobile` | 03 |
+| Meter identification | ppob-service | Sync REST `POST /api/v1/ppob/identifyMeter` (Letslink validation) | 02 |
+| Phone number identification | ppob-service | Sync REST `POST /api/v1/ppob/identifyPhoneNumber` (in-house prefix lookup) | 03 |
 
 ## Endpoints
 
 ### Resource: PPOB catalogues
 
-#### `GET /bff-mobile/v1/ppob/catalogues`
+#### List catalogues
 
-- Derived from story: 01-browse-catalogues
-- Auth: Bearer JWT (customer)
-- Request: query params `page` (default 0), `size` (default 20). No `showInactive` — customers only ever see active items.
-- Response: each catalogue carries `catalogueType` — the single identifier used in every catalogue path segment on both layers (configured by admin alongside the other catalogue fields; see `api/README.md` for the naming semantics).
+`GET /bff-mobile/v1/ppob/catalogues`
+
+Returns the customer-facing catalogue list, active-only, paginated.
+
+| | |
+| --- | --- |
+| Derived from story | 01-browse-catalogues |
+| Auth | Bearer JWT (customer) |
+
+**Flow**
+
+1. Validate JWT → invalid/expired → `401` (downstream not called).
+2. Forward `page`/`size` to `ppob-service` `GET /api/v1/ppob/catalogues` — active-only is forced (`showInactive` is never forwarded).
+3. Return the upstream paginated `result` unchanged.
+4. Upstream unavailable/5xx → `503 UPSTREAM_UNAVAILABLE`.
+
+**Request**
+
+| Query params | Type | Default | Notes |
+| --- | --- | --- | --- |
+| page | int | 0 | 0-based page index |
+| size | int | 20 | Page size |
+
+_No path params. No request body. No `showInactive` — customers only ever see active items._
+
+**Response**
+
+`result` is the paginated shape (`page`, `size`, `totalRows`, `totalPage`, `data[]`); each catalogue item:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| catalogueType | string | The single catalogue identifier — this app's path segment for its catalogue-scoped endpoints |
+| name | string | Display name |
+| icon | string | Icon URL |
+| order | int | Sort position (ascending) |
+
+**Example**
+
+```
+GET /bff-mobile/v1/ppob/catalogues?page=0&size=20
+```
 
 ```json
 {
@@ -69,7 +115,7 @@ Backend-for-frontend for `mobile-app`: authenticates the customer JWT, orchestra
 }
 ```
 
-- Errors (wrapper per [`api/README.md`](../README.md)):
+**Errors**
 
 | Status | Case | message |
 | --- | --- | --- |
@@ -78,29 +124,64 @@ Backend-for-frontend for `mobile-app`: authenticates the customer JWT, orchestra
 
 ### Resource: customer identification
 
-One shared BFF endpoint for all catalogues: the request carries `{ customerId }` plus the `catalogueType` path segment; the BFF interprets `customerId` per catalogue **by routing on the first part of `catalogueType`** (`electricity-*` → meter number, `mobile-*` → phone number) and forwards to the per-type `ppob-service` method with the typed field name (`meterNumber` / `phoneNumber`). The per-type methods keep their own typed signatures — the BFF does the translation, `ppob-service` stays type-specific.
+One shared endpoint for all catalogues. The response follows the uniform identify core ([`api/README.md`](../README.md#identify-response-core)): `valid`, `identifierType`, `customerId`, `details` — this layer adds `catalogueType`. `valid` is the checkout gate: checkout is never reached without a successful identification in this session. It does not gate or filter the product list.
 
-The response follows the uniform identify core ([`api/README.md`](../README.md#identify-response-core)): `valid`, `identifierType`, `customerId` + typed `details` — the BFF adds `catalogueType` to the core. `valid` is the checkout gate (story 04): checkout is never reached without a successful identification in this session. It does **not** gate the product list — `electricity-token` fetches its list immediately on screen open; `mobile-data` uses the identified `providerCode` as the products filter.
+#### Identify customer
 
-#### `POST /bff-mobile/v1/ppob/catalogues/{catalogueType}/identify`
+`POST /bff-mobile/v1/ppob/catalogues/{catalogueType}/identify`
 
-- Derived from story: 02-browse-electricity-token (`electricity-token`), 03-browse-data-package (`mobile-data`)
-- Auth: Bearer JWT (customer)
-- Path params: `catalogueType` (required; `404` if unknown catalogue).
-- Routing (first part of `catalogueType` — user-decided for the pilot, tracked as an open question in `00-overview.md`):
+Identifies the customer for a catalogue by interpreting `customerId` per catalogue type and returning the uniform identify core with typed `details`.
 
-| First part | `customerId` interpreted as | Forwarded as | Downstream method |
+| | |
+| --- | --- |
+| Derived from story | 02-browse-electricity-token; 03-browse-data-package |
+| Auth | Bearer JWT (customer) |
+
+**Flow**
+
+1. Validate JWT → invalid/expired → `401` (downstream not called).
+2. Resolve `catalogueType` → unknown → `404`.
+3. Reject with `400` if `customerId` is missing/blank.
+4. Interpret `customerId` by the first part of `catalogueType` and forward with the typed field:
+   - `electricity-*` (e.g. `electricity-token`) → `meterNumber` → `POST /api/v1/ppob/identifyMeter` (Letslink validation);
+   - `mobile-*` (e.g. `mobile-data`) → `phoneNumber` → `POST /api/v1/ppob/identifyPhoneNumber` (in-house prefix lookup);
+   - any other first part → `400` (no identification supported for that catalogue).
+5. Take `valid`, `identifierType`, `customerId`, `details` from the upstream response; add `catalogueType`.
+6. Upstream unavailable/5xx → `503 UPSTREAM_UNAVAILABLE`.
+
+**Request**
+
+| Path params | Type | Notes |
+| --- | --- | --- |
+| catalogueType | string | Required. `404` if unknown; its first part selects the identification method |
+
+| Body fields | Type | Required | Notes |
 | --- | --- | --- | --- |
-| `electricity` | meter number | `meterNumber` | `POST /api/v1/ppob/identifyMeter` (Letslink) |
-| `mobile` | phone number | `phoneNumber` | `POST /api/v1/ppob/identifyPhoneNumber` (in-house) |
+| customerId | string | yes | The customer ID entered on the screen — interpreted as meter number (`electricity-*`) or phone number (`mobile-*`) |
 
-- Request:
+**Response**
+
+`result` is the identify core plus `catalogueType`:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| valid | bool | The checkout gate. `false` → reason in `message` |
+| catalogueType | string | Echo of the path segment (added at this layer — internal identify methods don't carry it) |
+| identifierType | string | `METER_NUMBER` or `PHONE_NUMBER` |
+| customerId | string | Echo of the submitted value |
+| details.customerName | string | `METER_NUMBER` only — customer identity as known by Letslink |
+| details.wattage | int | `METER_NUMBER` only — carried into checkout; passed to Letslink at purchase (mints the token value). Not a list filter |
+| details.meterSpecs | object | `METER_NUMBER` only — meter specifications |
+| details.providerCode | string | `PHONE_NUMBER` only — provider code; used as the `mobile-data` products filter |
+| details.providerName | string | `PHONE_NUMBER` only — display name of the provider |
+
+**Example**
 
 ```json
 { "customerId": "5432176543" }
 ```
 
-- Response (`electricity-token` — customer identity + meter specs; `wattage` is **not a list filter** — it is carried into checkout and passed to Letslink at purchase, where the provider backend mints the token value (kWh) for that wattage):
+`electricity-token`:
 
 ```json
 {
@@ -120,7 +201,7 @@ The response follows the uniform identify core ([`api/README.md`](../README.md#i
 }
 ```
 
-- Response (`mobile-data` — in-house prefix lookup; `providerCode` filters the data package product list):
+`mobile-data`:
 
 ```json
 {
@@ -139,7 +220,7 @@ The response follows the uniform identify core ([`api/README.md`](../README.md#i
 }
 ```
 
-- Errors:
+**Errors**
 
 | Status | Case | message |
 | --- | --- | --- |
@@ -152,22 +233,59 @@ The response follows the uniform identify core ([`api/README.md`](../README.md#i
 
 ### Resource: PPOB products
 
-#### `GET /bff-mobile/v1/ppob/catalogues/{catalogueType}/products`
+#### List products
 
-Catalogue types in use: `electricity-token`, `mobile-data`. This endpoint is **decoupled from identification** — no identification params, no inline identification in the response; whether the customer identifies first is per-catalogue app behaviour:
+`GET /bff-mobile/v1/ppob/catalogues/{catalogueType}/products`
 
-- `electricity-token`: **list fetched immediately on screen open** — no filter (price is identical per product; wattage determines the token value at fulfillment). Identification is still mandatory before checkout (story 04), but never gates or filters this list.
-- `mobile-data`: **identify first, then list** — `providerCode` (from the identify response) is **required**; the list is never served unfiltered.
+Returns the active products of one catalogue, paginated. Filtering is per catalogue: `electricity-token` is never fetched with filters (price identical for all; wattage handled at purchase), while `mobile-data` requires `providerCode` — an unfiltered data list is never fetched. The list is decoupled from identification: whether the customer identifies first is per-catalogue screen behaviour.
 
-- Derived from story: 02-browse-electricity-token (electricity-token), 03-browse-data-package (mobile-data)
-- Auth: Bearer JWT (customer)
-- Path params: `catalogueType` (required; `404` if unknown catalogue).
-- Query params: `page` (default 0), `size` (default 20). No `showInactive`.
-  - `electricity-token`: no other params.
-  - `mobile-data`: `providerCode` (required — `400` without it; the app supplies the value from the identify response).
-- Response: products in the catalogue, active-only, price = admin override applied over Letslink base; each item carries its `catalogueType`.
+| | |
+| --- | --- |
+| Derived from story | 02-browse-electricity-token; 03-browse-data-package |
+| Auth | Bearer JWT (customer) |
 
-`electricity-token`:
+**Flow**
+
+1. Validate JWT → invalid/expired → `401` (downstream not called).
+2. Validate params for the catalogue: `mobile-data` → `providerCode` required, missing → `400`; `electricity-token` → no filter params. (The same rule is enforced by `ppob-service` — an unfiltered data list is never served.)
+3. Forward `page`/`size` (+ `providerCode`) to `ppob-service` `GET /api/v1/ppob/catalogues/{catalogueType}/products` — active-only is forced (`showInactive` is never forwarded).
+4. Return the upstream paginated `result`.
+5. Upstream unavailable/5xx → `503 UPSTREAM_UNAVAILABLE`; upstream `404` (unknown catalogue) → passed through.
+
+**Request**
+
+| Path params | Type | Notes |
+| --- | --- | --- |
+| catalogueType | string | Required. `404` if unknown |
+
+| Query params | Type | Default | Notes |
+| --- | --- | --- | --- |
+| page | int | 0 | 0-based page index |
+| size | int | 20 | Page size |
+| providerCode | string | — | **Required for `mobile-data`** (`400` without it; value comes from the identify response). Not applicable to `electricity-token` |
+
+_No request body. No `showInactive`._
+
+**Response**
+
+`result` is the paginated shape (`page`, `size`, `totalRows`, `totalPage`, `data[]`); each product item:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| catalogueType | string | Owning catalogue identifier |
+| id | string | Product id |
+| name | string | Display name |
+| operator | string | Provider/operator display (e.g. `PLN`, `Telkomsel`) |
+| denomination | int | `electricity-token` only — nominal token value (IDR) |
+| packageSize | string | `mobile-data` only — package size/duration (e.g. `10 GB`) |
+| price | int | Sale price (admin override applied over the Letslink base) |
+| isActive | bool | Always `true` for customers |
+
+**Example**
+
+```
+GET /bff-mobile/v1/ppob/catalogues/electricity-token/products?page=0&size=20
+```
 
 ```json
 {
@@ -193,7 +311,9 @@ Catalogue types in use: `electricity-token`, `mobile-data`. This endpoint is **d
 }
 ```
 
-`mobile-data` (called with `?providerCode=TSEL`, list filtered to the provider):
+```
+GET /bff-mobile/v1/ppob/catalogues/mobile-data/products?providerCode=TSEL&page=0&size=20
+```
 
 ```json
 {
@@ -219,7 +339,7 @@ Catalogue types in use: `electricity-token`, `mobile-data`. This endpoint is **d
 }
 ```
 
-- Errors (wrapper per [`api/README.md`](../README.md)):
+**Errors**
 
 | Status | Case | message |
 | --- | --- | --- |

@@ -11,6 +11,8 @@ flowchart LR
         admin[mobile-app-admin-dashboard]
     end
 
+    gw[public API gateway]
+
     subgraph BFFs
         bffm[bff-mobile]
         bffa[bff-admin]
@@ -31,11 +33,12 @@ flowchart LR
 
     letslink[(Letslink<br/>aggregator)]
 
-    app -->|"REST / JWT"| bffm
+    app -->|"REST / JWT"| gw
+    gw -->|"/bff-mobile/**"| bffm
     admin -->|REST| bffa
     bffa -->|catalog overrides| ppob
     bffm -->|catalog read, balance check| ppob
-    bffm -->|checkout: create BNPL order<br/>(sync wait boundary)| bnpl
+    bffm -->|"checkout: create BNPL order<br/>(sync wait boundary)"| bnpl
     ppob -->|balance check, purchase,<br/>product feed sync| letslink
 
     bnpl -->|register order| sp
@@ -59,6 +62,7 @@ flowchart LR
 ```mermaid
 sequenceDiagram
     participant app as mobile-app
+    participant gw as public API gateway
     participant bff as bff-mobile
     participant ppob as ppob-service
     participant bnpl as bnpl-service
@@ -68,7 +72,8 @@ sequenceDiagram
     participant ll as Letslink
     participant ns as notification-service
 
-    app->>bff: browse products / start checkout
+    app->>gw: browse products / start checkout (HTTPS)
+    gw->>bff: route /bff-mobile/** (JWT forwarded)
     bff->>ppob: read catalog + check Letslink balance
     ppob->>ll: GET balance
     ll-->>ppob: balance OK
@@ -77,7 +82,8 @@ sequenceDiagram
     bnpl->>sp: register order (forwards to core-credit)
     sp->>cc: forward order
     bnpl-->>bff: order created
-    bff-->>app: checkout accepted (order in progress)
+    bff-->>gw: checkout accepted (order in progress)
+    gw-->>app: checkout accepted (order in progress)
 
     Note over cc,ppob: background continuation of the chain
     cc->>cc: credit eligibility + eKYC validation
@@ -112,6 +118,7 @@ sequenceDiagram
 
 ## Component Details
 
+- **public API gateway** (existing) — public entry point for the mobile app: terminates TLS and routes `/bff-mobile/**` to `bff-mobile`. It does not authenticate; JWT validation stays at the BFF.
 - **bff-mobile** — main orchestrator for the mobile app. Handles JWT validation against `user-service` conventions, serves the PPOB catalog and balance pre-check, accepts checkout and translates it to `bnpl-service` order creation (the app's synchronous wait boundary), and aggregates order history for display. Holds no PPOB business data.
 - **bff-admin** — thin BFF for the admin dashboard; exposes catalog override operations (price/markup, enable/disable) against `ppob-service`.
 - **ppob-service** (new) — owns the PPOB transaction lifecycle entity (pending → paid → delivered/failed) with Letslink references and token code. Integrates with Letslink for balance check, purchase, and product feed sync (base data overlaid by admin overrides). Initiates failure unwinds (refund + cancellation chain) and sends the completion push via `notification-service`.
@@ -131,7 +138,7 @@ sequenceDiagram
 
 ## Data Flow
 
-1. **Browse:** `mobile-app → bff-mobile → ppob-service → Letslink` for balance; catalog served from `ppob-service` (Letslink feed + admin overrides).
+1. **Browse:** `mobile-app → public API gateway → bff-mobile → ppob-service → Letslink` for balance; catalog served from `ppob-service` (Letslink feed + admin overrides).
 2. **Checkout (sync until order created):** `bff-mobile` checks balance, then `bnpl-service` creates the BNPL order reserving the limit → `sales-portal-service` registers → `core-credit-service` receives. Response returns to the app: "order in progress."
 3. **Continuation (server-side):** `core-credit-service` validates credit/eKYC → confirms hold with `core-financing-service` → starts the PPOB transaction via `bnpl-service` (limit deducted) → `ppob-service` executes the Letslink purchase → records the outcome on the PPOB transaction.
 4. **Completion:** `ppob-service` sends a push via `notification-service`; the app also polls `sales-portal-service` history (in-progress and completed) meanwhile.
@@ -139,8 +146,8 @@ sequenceDiagram
 
 ## Security & Auth
 
-- Mobile app authenticates with JWT issued by `user-service`; `bff-mobile` validates tokens and never exposes internal service endpoints to the client.
-- Internal service-to-service calls are private-network only (no public exposure); admin operations go exclusively through `bff-admin`.
+- Mobile app reaches `bff-mobile` through the **public API gateway** (TLS termination + routing only, no auth at the gateway); it authenticates with a JWT issued by `user-service`, which `bff-mobile` validates — internal service endpoints are never exposed to the client.
+- Internal service-to-service calls are private-network only (no public exposure) and mutually authenticated with **mTLS** (client certificates per company PKI); admin operations go exclusively through `bff-admin`.
 - Letslink credentials (API keys) are held by `ppob-service` only, stored as secrets, never returned to clients.
 - The Letslink balance top-up and its dashboard are outside this system's trust boundary.
 

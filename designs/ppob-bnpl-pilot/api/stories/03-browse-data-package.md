@@ -31,10 +31,10 @@ sequenceDiagram
 
 | # | Caller | Callee | Call | Sync/Async | Reference |
 | --- | --- | --- | --- | --- | --- |
-| 1 | mobile-app | bff-mobile | `POST /bff-mobile/v1/ppob/catalogues/mobile-data/identify` body `{ customerId }` (phone number, before any list fetch) | Sync | `api/applications/bff-mobile.md#post-bff-mobilev1ppobcataloguescataloguetypeidentify` |
-| 2 | bff-mobile | ppob-service | `POST /api/v1/ppob/identifyPhoneNumber` body `{ phoneNumber }` (routed by first part `mobile`) | Sync | `api/applications/ppob-service.md#post-apiv1ppobidentifyphonenumber` |
-| 3 | mobile-app | bff-mobile | `GET /bff-mobile/v1/ppob/catalogues/mobile-data/products?providerCode=...&page&size` (after step 1 returns `valid: true`) | Sync | `api/applications/bff-mobile.md#get-bff-mobilev1ppobcataloguescataloguetypeproducts` |
-| 4 | bff-mobile | ppob-service | `GET /api/v1/ppob/catalogues/mobile-data/products?providerCode=...&page&size` | Sync | `api/applications/ppob-service.md#get-apiv1ppobcataloguescataloguetypeproducts` |
+| 1 | mobile-app | bff-mobile | `POST /bff-mobile/v1/ppob/catalogues/mobile-data/identify` body `{ customerId }` (phone number, before any list fetch) | Sync | `api/applications/bff-mobile.md#identify-customer` |
+| 2 | bff-mobile | ppob-service | `POST /api/v1/ppob/identifyPhoneNumber` body `{ phoneNumber }` (routed by first part `mobile`) | Sync | `api/applications/ppob-service.md#identify-phone-number` |
+| 3 | mobile-app | bff-mobile | `GET /bff-mobile/v1/ppob/catalogues/mobile-data/products?providerCode=...&page&size` (after step 1 returns `valid: true`) | Sync | `api/applications/bff-mobile.md#list-products` |
+| 4 | bff-mobile | ppob-service | `GET /api/v1/ppob/catalogues/mobile-data/products?providerCode=...&page&size` | Sync | `api/applications/ppob-service.md#list-products` |
 | — | Letslink | ppob-service | Product feed sync (periodic) | Async (scheduled) | `api/applications/ppob-service.md#resources-used` |
 
 ## Data Passed Between Steps

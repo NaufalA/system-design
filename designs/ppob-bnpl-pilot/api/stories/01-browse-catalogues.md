@@ -20,8 +20,8 @@ sequenceDiagram
 
 | # | Caller | Callee | Call | Sync/Async | Reference |
 | --- | --- | --- | --- | --- | --- |
-| 1 | mobile-app | bff-mobile | `GET /bff-mobile/v1/ppob/catalogues?page&size` (Bearer JWT) | Sync | `api/applications/bff-mobile.md#get-bff-mobilev1ppobcatalogues` |
-| 2 | bff-mobile | ppob-service | `GET /api/v1/ppob/catalogues?page&size` | Sync | `api/applications/ppob-service.md#get-apiv1ppobcatalogues` |
+| 1 | mobile-app | bff-mobile | `GET /bff-mobile/v1/ppob/catalogues?page&size` (Bearer JWT) | Sync | `api/applications/bff-mobile.md#list-catalogues` |
+| 2 | bff-mobile | ppob-service | `GET /api/v1/ppob/catalogues?page&size` | Sync | `api/applications/ppob-service.md#list-catalogues` |
 
 ## Data Passed Between Steps
 

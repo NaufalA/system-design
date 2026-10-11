@@ -18,7 +18,7 @@ sequenceDiagram
     bff->>ppob: GET /api/v1/ppob/catalogues/electricity-token/products?page&size
     ppob-->>bff: products (base feed price + admin override, active only, unfiltered)
     bff-->>app: 200 OK result.data[]
-    Note over app: list rendered immediately; customer enters meter number
+    Note over app: list rendered immediately, customer enters meter number
 
     app->>bff: POST /bff-mobile/v1/ppob/catalogues/electricity-token/identify { customerId }
     bff->>bff: validate JWT, route: first part "electricity" → meter
@@ -34,10 +34,10 @@ sequenceDiagram
 
 | # | Caller | Callee | Call | Sync/Async | Reference |
 | --- | --- | --- | --- | --- | --- |
-| 1 | mobile-app | bff-mobile | `GET /bff-mobile/v1/ppob/catalogues/electricity-token/products?page&size` (on screen open) | Sync | `api/applications/bff-mobile.md#get-bff-mobilev1ppobcataloguescataloguetypeproducts` |
-| 2 | bff-mobile | ppob-service | `GET /api/v1/ppob/catalogues/electricity-token/products?page&size` | Sync | `api/applications/ppob-service.md#get-apiv1ppobcataloguescataloguetypeproducts` |
-| 3 | mobile-app | bff-mobile | `POST /bff-mobile/v1/ppob/catalogues/electricity-token/identify` body `{ customerId }` (when customer enters the meter number) | Sync | `api/applications/bff-mobile.md#post-bff-mobilev1ppobcataloguescataloguetypeidentify` |
-| 4 | bff-mobile | ppob-service | `POST /api/v1/ppob/identifyMeter` body `{ meterNumber }` (routed by first part `electricity`) | Sync | `api/applications/ppob-service.md#post-apiv1ppobidentifymeter` |
+| 1 | mobile-app | bff-mobile | `GET /bff-mobile/v1/ppob/catalogues/electricity-token/products?page&size` (on screen open) | Sync | `api/applications/bff-mobile.md#list-products` |
+| 2 | bff-mobile | ppob-service | `GET /api/v1/ppob/catalogues/electricity-token/products?page&size` | Sync | `api/applications/ppob-service.md#list-products` |
+| 3 | mobile-app | bff-mobile | `POST /bff-mobile/v1/ppob/catalogues/electricity-token/identify` body `{ customerId }` (when customer enters the meter number) | Sync | `api/applications/bff-mobile.md#identify-customer` |
+| 4 | bff-mobile | ppob-service | `POST /api/v1/ppob/identifyMeter` body `{ meterNumber }` (routed by first part `electricity`) | Sync | `api/applications/ppob-service.md#identify-meter` |
 | 5 | ppob-service | Letslink | Customer/meter validation (external REST) | Sync | `api/applications/ppob-service.md#resources-used` |
 | — | Letslink | ppob-service | Product feed sync (periodic) | Async (scheduled) | `api/applications/ppob-service.md#resources-used` |
 
