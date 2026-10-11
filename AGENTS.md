@@ -17,7 +17,7 @@ designs/<project-slug>/
 
 ## Conventions
 
-- Diagrams use Mermaid code blocks (`flowchart`, `sequenceDiagram`).
+- Diagrams use Mermaid code blocks (`flowchart`, `sequenceDiagram`). After editing any diagram, validate it: `npm install` once, then `npm run validate:diagrams` — parses every ```` ```mermaid ```` block in `designs/` and `templates/` with Mermaid's own parser and exits non-zero on broken diagrams.
 - Story documents and API documents use the templates in `templates/`.
 - Numbering: `NN` is a zero-padded story counter, e.g. `01-checkout.md`.
 - Every endpoint has a single authoritative definition in `api/applications/<app-slug>.md`; per-story API docs (`api/stories/`) reference it by anchor instead of duplicating schemas.

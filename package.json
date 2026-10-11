@@ -1,0 +1,12 @@
+{
+  "name": "system-design",
+  "private": true,
+  "description": "System design drafts — repository tooling (diagram validation)",
+  "scripts": {
+    "validate:diagrams": "node scripts/validate-diagrams.mjs"
+  },
+  "devDependencies": {
+    "jsdom": "^30.1.2",
+    "mermaid": "^12.1.0"
+  }
+}
