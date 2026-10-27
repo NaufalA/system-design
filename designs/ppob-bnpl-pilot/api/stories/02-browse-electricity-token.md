@@ -18,11 +18,17 @@ sequenceDiagram
     bff->>ppob: GET /api/v1/ppob/catalogues/electricity-token/products?page&size&orderBy=displayOrder ASC
     ppob-->>bff: products (base feed price + admin override, active only, unfiltered)
     bff-->>app: 200 OK result.data[] (audit fields stripped)
-    Note over app: list rendered immediately, customer enters meter number
+
+    app->>bff: GET /bff-mobile/v1/ppob/catalogues/electricity-token/customer-identifications?page&size
+    bff->>ppob: GET /api/v1/ppob/customer-identifications?identifierType=METER_NUMBER&page&size&orderBy=lastUsedAt DESC
+    ppob-->>bff: previous identifications (meter numbers, most-recent first)
+    bff-->>app: 200 OK result.data[] (audit fields stripped)
+
+    Note over app: list rendered immediately, list of previous meters shown, customer enters/selects a meter number
 
     app->>bff: POST /bff-mobile/v1/ppob/catalogues/electricity-token/identify { customerId }
     bff->>bff: validate JWT, route: first part "electricity" → meter
-    bff->>ppob: POST /api/v1/ppob/identifyMeter { meterNumber }
+    bff->>ppob: POST /api/v1/ppob/customer-identifications/identifyMeter { meterNumber }
     ppob->>ll: customer/meter validation
     ll-->>ppob: customer identity + meter specs (incl. wattage)
     ppob-->>bff: 200 core { valid, identifierType, customerId, details }
@@ -36,17 +42,21 @@ sequenceDiagram
 | --- | --- | --- | --- | --- | --- |
 | 1 | mobile-app | bff-mobile | `GET /bff-mobile/v1/ppob/catalogues/electricity-token/products?page&size` (on screen open) | Sync | `api/applications/bff-mobile.md#list-products` |
 | 2 | bff-mobile | ppob-service | `GET /api/v1/ppob/catalogues/electricity-token/products?page&size&orderBy=displayOrder ASC` | Sync | `api/applications/ppob-service.md#list-products` |
-| 3 | mobile-app | bff-mobile | `POST /bff-mobile/v1/ppob/catalogues/electricity-token/identify` body `{ customerId }` (when customer enters the meter number) | Sync | `api/applications/bff-mobile.md#identify-customer` |
-| 4 | bff-mobile | ppob-service | `POST /api/v1/ppob/identifyMeter` body `{ meterNumber }` (routed by first part `electricity`) | Sync | `api/applications/ppob-service.md#identify-meter` |
-| 5 | ppob-service | Letslink | Customer/meter validation (external REST) | Sync | `api/applications/ppob-service.md#resources-used` |
+| 3 | mobile-app | bff-mobile | `GET /bff-mobile/v1/ppob/catalogues/electricity-token/customer-identifications?page&size` (on screen open) | Sync | `api/applications/bff-mobile.md#list-customer-identifications` |
+| 4 | bff-mobile | ppob-service | `GET /api/v1/ppob/customer-identifications?identifierType=METER_NUMBER&page&size&orderBy=lastUsedAt DESC` | Sync | `api/applications/ppob-service.md#list-customer-identifications` |
+| 5 | mobile-app | bff-mobile | `POST /bff-mobile/v1/ppob/catalogues/electricity-token/identify` body `{ customerId }` (when customer enters/selects a meter number) | Sync | `api/applications/bff-mobile.md#identify-customer` |
+| 6 | bff-mobile | ppob-service | `POST /api/v1/ppob/customer-identifications/identifyMeter` body `{ meterNumber }` (routed by first part `electricity`) | Sync | `api/applications/ppob-service.md#identify-meter` |
+| 7 | ppob-service | Letslink | Customer/meter validation (external REST) | Sync | `api/applications/ppob-service.md#resources-used` |
 | — | Letslink | ppob-service | Product feed sync (periodic) | Async (scheduled) | `api/applications/ppob-service.md#resources-used` |
 
 ## Data Passed Between Steps
 
 - Step 1 → 2: `catalogueType` path segment passed through verbatim (no id mapping); `bff-mobile` forces active-only (never forwards `showInactive`) and injects the screen's fixed ordering (`orderBy=displayOrder ASC` — microservices have no default order; the app cannot supply `orderBy`).
 - Step 2 → 1: microservice-paginated `result` (`page`, `size`, `totalRows`, `totalPage`, `data`); `bff-mobile` strips the audit fields (passes `isActive` only) and passes it through. All active products are returned regardless of wattage — **never filtered** (price is identical per product; wattage determines the token value minted at fulfillment, visible only post-purchase).
-- Step 3 → 4: BFF routes on the first part of `catalogueType` (`electricity` → meter identification) and translates `customerId` → typed `meterNumber`.
-- Step 5 → 3: `ppob-service` returns the identify core `{ valid, identifierType: METER_NUMBER, customerId, details: { customerName, wattage, meterSpecs } }`; `bff-mobile` adds `catalogueType` and passes through. `wattage` is **carried into checkout (story 04) and passed to Letslink at purchase** — it does not filter the list.
+- Step 3 → 4: `identifierType = METER_NUMBER` derived by the BFF from the catalogue's first part; `bff-mobile` forwards `page`/`size` and injects `orderBy=lastUsedAt DESC`.
+- Step 4 → 3: paginated list of the caller's previous meter identifications (audit fields stripped, `lastUsedAt` kept), most-recent first; selecting one re-runs identify (which upserts `lastUsedAt` as a background side effect).
+- Step 5 → 6: BFF routes on the first part of `catalogueType` (`electricity` → meter identification) and translates `customerId` → typed `meterNumber`.
+- Step 6 → 5: `ppob-service` returns the identify core `{ valid, identifierType: METER_NUMBER, customerId, details: { customerName, wattage, meterSpecs } }`; `bff-mobile` adds `catalogueType` and passes through. `wattage` is **carried into checkout (story 04) and passed to Letslink at purchase** — it does not filter the list. On a successful full-number identify, a history row is upserted in the background (fire-and-forget) — the response is never blocked or failed by it.
 
 ## Failure & Consistency Behavior
 

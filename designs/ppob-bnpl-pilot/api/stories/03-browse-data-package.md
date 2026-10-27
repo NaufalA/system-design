@@ -12,9 +12,15 @@ sequenceDiagram
 
     Note over app: customer enters phone number (before any list fetch)
 
+    app->>bff: GET /bff-mobile/v1/ppob/catalogues/mobile-data/customer-identifications?page&size (Bearer JWT)
+    bff->>ppob: GET /api/v1/ppob/customer-identifications?identifierType=PHONE_NUMBER&page&size&orderBy=lastUsedAt DESC
+    ppob-->>bff: previous identifications (phone numbers, most-recent first)
+    bff-->>app: 200 OK result.data[] (audit fields stripped)
+    Note over app: list of previous numbers shown
+
     app->>bff: POST /bff-mobile/v1/ppob/catalogues/mobile-data/identify { customerId }
     bff->>bff: validate JWT, route: first part "mobile" → phone number
-    bff->>ppob: POST /api/v1/ppob/identifyPhoneNumber { phoneNumber }
+    bff->>ppob: POST /api/v1/ppob/customer-identifications/identifyPhoneNumber { phoneNumber }
     ppob->>ppob: in-house prefix lookup
     ppob-->>bff: 200 core { valid, identifierType, customerId, details { providerCode, providerName } }
     bff-->>app: 200 OK core + catalogueType
@@ -31,18 +37,22 @@ sequenceDiagram
 
 | # | Caller | Callee | Call | Sync/Async | Reference |
 | --- | --- | --- | --- | --- | --- |
-| 1 | mobile-app | bff-mobile | `POST /bff-mobile/v1/ppob/catalogues/mobile-data/identify` body `{ customerId }` (phone number, before any list fetch) | Sync | `api/applications/bff-mobile.md#identify-customer` |
-| 2 | bff-mobile | ppob-service | `POST /api/v1/ppob/identifyPhoneNumber` body `{ phoneNumber }` (routed by first part `mobile`) | Sync | `api/applications/ppob-service.md#identify-phone-number` |
-| 3 | mobile-app | bff-mobile | `GET /bff-mobile/v1/ppob/catalogues/mobile-data/products?providerCode=...&page&size` (after step 1 returns `valid: true`) | Sync | `api/applications/bff-mobile.md#list-products` |
-| 4 | bff-mobile | ppob-service | `GET /api/v1/ppob/catalogues/mobile-data/products?providerCode=...&page&size&orderBy=displayOrder ASC` | Sync | `api/applications/ppob-service.md#list-products` |
+| 1 | mobile-app | bff-mobile | `GET /bff-mobile/v1/ppob/catalogues/mobile-data/customer-identifications?page&size` (on screen open) | Sync | `api/applications/bff-mobile.md#list-customer-identifications` |
+| 2 | bff-mobile | ppob-service | `GET /api/v1/ppob/customer-identifications?identifierType=PHONE_NUMBER&page&size&orderBy=lastUsedAt DESC` | Sync | `api/applications/ppob-service.md#list-customer-identifications` |
+| 3 | mobile-app | bff-mobile | `POST /bff-mobile/v1/ppob/catalogues/mobile-data/identify` body `{ customerId }` (phone number, before any list fetch / on selection) | Sync | `api/applications/bff-mobile.md#identify-customer` |
+| 4 | bff-mobile | ppob-service | `POST /api/v1/ppob/customer-identifications/identifyPhoneNumber` body `{ phoneNumber }` (routed by first part `mobile`) | Sync | `api/applications/ppob-service.md#identify-phone-number` |
+| 5 | mobile-app | bff-mobile | `GET /bff-mobile/v1/ppob/catalogues/mobile-data/products?providerCode=...&page&size` (after step 3 returns `valid: true`) | Sync | `api/applications/bff-mobile.md#list-products` |
+| 6 | bff-mobile | ppob-service | `GET /api/v1/ppob/catalogues/mobile-data/products?providerCode=...&page&size&orderBy=displayOrder ASC` | Sync | `api/applications/ppob-service.md#list-products` |
 | — | Letslink | ppob-service | Product feed sync (periodic) | Async (scheduled) | `api/applications/ppob-service.md#resources-used` |
 
 ## Data Passed Between Steps
 
-- Step 1 → 2: BFF routes on the first part of `catalogueType` (`mobile` → phone identification) and translates `customerId` → typed `phoneNumber`.
-- Step 2 → 1: `ppob-service` returns the identify core `{ valid, identifierType: PHONE_NUMBER, customerId, details: { providerCode, providerName } }`; `bff-mobile` adds `catalogueType` and passes through — the app stores `providerCode` for the products call (and paging).
-- Step 3 → 4: `providerCode` from the identify response + `catalogueType` path segment + pagination; `bff-mobile` injects the screen's fixed ordering (`orderBy=displayOrder ASC` — microservices have no default order; the app cannot supply `orderBy`) and never forwards `showInactive`.
-- Step 4 → 3: microservice-paginated `result.data`, filtered to the provider; `bff-mobile` strips the audit fields (passes `isActive` only) and passes it through.
+- Step 1 → 2: `bff-mobile` forwards `page`/`size` and injects `orderBy=lastUsedAt DESC`; active-only is forced.
+- Step 2 → 1: paginated list of the caller's previous phone identifications (audit fields stripped, `lastUsedAt` kept), most-recent first; selecting one re-runs identify (which upserts `lastUsedAt` as a background side effect).
+- Step 3 → 4: BFF routes on the first part of `catalogueType` (`mobile` → phone identification) and translates `customerId` → typed `phoneNumber`.
+- Step 4 → 3: `ppob-service` returns the identify core `{ valid, identifierType: PHONE_NUMBER, customerId, details: { providerCode, providerName } }`; `bff-mobile` adds `catalogueType` and passes through — the app stores `providerCode` for the products call (and paging). On a successful full-number identify (length > 10), a history row is upserted in the background (fire-and-forget) — the response is never blocked or failed by it.
+- Step 5 → 6: `providerCode` from the identify response + `catalogueType` path segment + pagination. `bff-mobile` injects the screen's fixed ordering (`orderBy=displayOrder ASC` — microservices have no default order; the app cannot supply `orderBy`) and never forwards `showInactive`.
+- Step 6 → 5: microservice-paginated `result.data`, filtered to the provider; `bff-mobile` strips the audit fields (passes `isActive` only) and passes it through.
 
 ## Failure & Consistency Behavior
 

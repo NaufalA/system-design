@@ -12,6 +12,7 @@ As a customer, I want to browse available mobile data packages (provider, packag
 ## Acceptance Criteria
 
 - Selecting the Data catalogue shows a **phone number input**; the product list is fetched **only after a successful identification** (blocking, required before balance check + draft creation — story 04). The list is **never shown unfiltered** — a products call without the identified `providerCode` is rejected server-side.
+- The screen also shows the customer's **previously identified phone numbers** (from customer-identification history), most-recent first, so the customer can re-select one; phone numbers can be identified from 4 digits (prefix lookup), but only full, valid numbers are stored.
 - Identification uses the shared identify endpoint (`POST /ppob/catalogues/{catalogueType}/identify`, `customerId` in — interpreted as the phone number for `mobile-data`) and is served **in-house by `ppob-service`** (own phone-prefix → provider table, not Letslink), returning the uniform identify core with a `providerCode` used to **filter the data package list** to that provider's products.
 - Once identified, subsequent list requests reuse the `providerCode` (paging/scroll) until the customer changes the phone number (then re-identify).
 - The list shows available packages with: provider, package size/duration, **sale price** (admin override applied over the Letslink base price).
@@ -27,8 +28,8 @@ As a customer, I want to browse available mobile data packages (provider, packag
 
 ## Happy Path
 
-1. Customer taps the Data catalogue → screen opens with a **phone number input**; **no list is fetched yet**.
-2. Customer enters the number → `mobile-app` → `bff-mobile` `POST /bff-mobile/v1/ppob/catalogues/mobile-data/identify { customerId }` (BFF routes on the first part `mobile` → internal `POST /api/v1/ppob/identifyPhoneNumber { phoneNumber }` → in-house prefix lookup → identify core with `providerCode` + provider name, e.g. `TSEL`).
+1. Customer taps the Data catalogue → screen opens with a **phone number input** and **no list yet**; the screen also fetches the customer's **previous phone identifications** (most-recent first) for quick re-selection.
+2. Customer enters the number (or selects a previous one) → `mobile-app` → `bff-mobile` `POST /bff-mobile/v1/ppob/catalogues/mobile-data/identify { customerId }` (BFF routes on the first part `mobile` → internal `POST /api/v1/ppob/customer-identifications/identifyPhoneNumber { phoneNumber }` → in-house prefix lookup → identify core with `providerCode` + provider name, e.g. `TSEL`). Prefix lookup runs from 4 digits; only a full, valid number is stored (background side effect).
 3. Identification success (blocking gate passed) → `mobile-app` fetches the product list with the `providerCode` → `bff-mobile` → `ppob-service`: Letslink feed (base) + admin overrides, active products **filtered to the provider** (server rejects the call without `providerCode`).
 4. List rendered: provider, package, price. The `providerCode` is reused on subsequent requests (paging/scroll) until the customer changes the number.
 5. Customer selects a product → navigates to checkout (story 04). The entered phone number and identification result travel with the checkout (passed at draft creation/submit).
@@ -53,8 +54,8 @@ As a customer, I want to browse available mobile data packages (provider, packag
 
 ## Data
 
-- Reads: PPOB product catalog (base + overrides), catalogue configuration, phone-prefix → provider mapping — owned by `ppob-service`
-- Writes: none by the customer (background feed-sync refresh only; identification is a read-only lookup)
+- Reads: PPOB product catalog (base + overrides), catalogue configuration, phone-prefix → provider mapping — owned by `ppob-service`; **customer identification history** — `ppob-service` (read on catalogue entry)
+- Writes: none by the customer (background feed-sync refresh only; identification is a read-only lookup — except a **background upsert of identification history** on a successful full-number identify, fire-and-forget)
 
 ## Derived API Interactions
 

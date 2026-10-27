@@ -12,7 +12,7 @@ Canonical rules for **every** endpoint in `api/applications/*.md` and every inte
 - **Microservices are resource-based per Google AIP**, with these project deviations (explicit conventions outrank AIP):
   - Only **GET** (reads) and **POST** (creates) are used.
   - **Update and delete are custom methods** expressed as regular URL paths with POST (e.g. `POST .../update`), never PUT/PATCH/DELETE.
-  - Custom methods use **`/` as a regular path segment, not AIP's `:verb`**, with a lowerCamelCase verb (AIP-136), e.g. `POST /api/v1/ppob/identifyMeter`.
+  - Custom methods use **`/` as a regular path segment, not AIP's `:verb`**, with a lowerCamelCase verb (AIP-136), e.g. `POST /api/v1/ppob/customer-identifications/identifyMeter`.
   - **Every custom method's placement in the resource structure is asked about individually** — never assumed.
   - AIP applies to microservices only; BFFs stay screen-aligned.
 

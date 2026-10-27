@@ -21,7 +21,7 @@ Internal only — no public exposure. Consumed over the internal network by `bff
 | Resource | Description | Endpoints |
 | --- | --- | --- |
 | PPOB catalogue configuration | Admin-defined catalogues (`catalogueType` identifier, name, icon, order, visibility) | `GET /api/v1/ppob/catalogues`; `GET /api/v1/ppob/catalogues/{catalogueType}`; admin CRUD _(story 07)_ |
-| Customer identification | One stateless method per identifier type — `identifyMeter` (Letslink validation) and `identifyPhoneNumber` (in-house prefix table); both return the identify core | `POST /api/v1/ppob/identifyMeter`, `POST /api/v1/ppob/identifyPhoneNumber` |
+| Customer identifications | Previously identified identifiers (meter numbers / phone numbers) with typed details and last-used time; upserted as a side effect of a successful full-number identify | `GET /api/v1/ppob/customer-identifications`; `POST /api/v1/ppob/customer-identifications/identifyMeter`; `POST /api/v1/ppob/customer-identifications/identifyPhoneNumber` |
 | Phone-prefix → provider table | In-house mapping used to identify data-package numbers (static config for pilot; admin management TBD in story 07 scope) | consumed by `identifyPhoneNumber` (below) |
 | PPOB product catalog | Products from Letslink feed with admin price/enable overrides | `GET /api/v1/ppob/catalogues/{catalogueType}/products`, admin overrides _(story 07)_ |
 | PPOB transactions | Lifecycle: pending → delivered / failed; Letslink refs, token code | execution _(story 04)_, detail reads _(story 05/06)_ |
@@ -187,15 +187,104 @@ GET /api/v1/ppob/catalogues/electricity-token
 | 404 | Unknown `catalogueType` | `NOT_FOUND: catalogue does not exist` |
 | 500 | Internal failure reading config | `INTERNAL: ...` |
 
-### Resource: customer identification
+### Resource: customer identifications
 
-Two stateless custom methods (regular `/` path, camelCase verb, POST) with typed request signatures — one per identifier type. Both responses follow the uniform identify core (`valid`, `identifierType`, `customerId` + typed `details` — per [`api/README.md`](../README.md#identify-response-core)). Responses do **not** carry `catalogueType` — one method may serve multiple catalogues (`identifyMeter` also serves a future `electricity-postpaid`).
+A persistent collection of the customer's previously identified identifiers (meter numbers / phone numbers), keyed by `(userId, identifierType, customerId)`. Entries are upserted as a **background side effect** of a successful, full-number identification (fire-and-forget — the identify response is never blocked or failed by the history write). `details` are stored once on first identify and not updated on repeat (only `lastUsedAt` moves). Identification history is soft-deleted like any other resource; reads default to active rows.
+
+#### List customer identifications
+
+`GET /api/v1/ppob/customer-identifications`
+
+Returns the caller's previously identified identifiers, paginated, most-recently-used first. Filtering is per identifier type: the caller (via the BFF) passes `identifierType` derived from the catalogue being entered, so a catalogue screen only shows identifiers of the matching type.
+
+| | |
+| --- | --- |
+| Derived from story | 02-browse-electricity-token; 03-browse-data-package |
+| Auth | service-to-service |
+
+**Flow**
+
+1. Resolve the caller's internal user id from the request context (passed by the BFF) → missing → `401`.
+2. Read `identifierType` filter (optional) → invalid value → `400`.
+3. Read the customer-identification rows for `userId`, applying the `identifierType` filter and `isActive` filter (`showInactive` relaxes it — honored unconditionally; caller-type restrictions are the BFF's).
+4. Apply `orderBy` if supplied (default `lastUsedAt DESC`); no default order beyond that — database order when `orderBy` is omitted. Slice `page`/`size`; compute `totalRows` and `totalPage`.
+5. Return the wrapper with the paginated `result`.
+
+**Request**
+
+| Query params | Type | Default | Notes |
+| --- | --- | --- | --- |
+| page | int | 1 | 1-based page index |
+| size | int | 20 | Page size |
+| orderBy | string | `lastUsedAt DESC` | Comma-separated `fieldName ORDER` (`ASC`\|`DESC`); unknown field/malformed → `400` |
+| identifierType | string | — | Filter: `METER_NUMBER` or `PHONE_NUMBER`. Supplied by the BFF from the catalogue's first part |
+| showInactive | bool | false | When `true`, soft-deleted rows are included; honored unconditionally (caller-type restrictions are the BFF's) |
+
+_No path params. No request body._
+
+**Response**
+
+`result` is the paginated shape (`page`, `size`, `totalRows`, `totalPage`, `data[]`); each identification item:
+
+| Field | Type | Notes |
+| --- | --- | --- |
+| id | string | Identification record id |
+| identifierType | string | `METER_NUMBER` or `PHONE_NUMBER` |
+| customerId | string | The meter number / phone number |
+| details | object | Typed details from the last successful identify (meter: `{customerName, wattage, meterSpecs}`; phone: `{providerCode, providerName}`) |
+| lastUsedAt | string | ISO 8601 (timestamptz) — updated on every successful full-number identify |
+| createdDate | string | ISO 8601 (timestamptz) |
+| updatedDate | string | ISO 8601 (timestamptz) |
+| createdBy | string | Actor (≤ 50 chars) — the `userId` |
+| updatedBy | string | Actor (≤ 50 chars) — the `userId` |
+| isActive | bool | Soft-delete flag |
+
+**Example**
+
+```
+GET /api/v1/ppob/customer-identifications?identifierType=METER_NUMBER&page=1&size=20&orderBy=lastUsedAt DESC
+```
+
+```json
+{
+  "response": 200,
+  "message": "Customer identifications retrieved successfully",
+  "result": {
+    "page": 1,
+    "size": 20,
+    "totalRows": 1,
+    "totalPage": 1,
+    "data": [
+      {
+        "id": "ci-001",
+        "identifierType": "METER_NUMBER",
+        "customerId": "5432176543",
+        "details": { "customerName": "SKU. 5432176543", "wattage": 2200, "meterSpecs": { "power": "2200VA" } },
+        "lastUsedAt": "2026-10-20T09:15:00Z",
+        "createdDate": "2026-10-01T03:00:00Z",
+        "updatedDate": "2026-10-20T09:15:00Z",
+        "createdBy": "user-123",
+        "updatedBy": "user-123",
+        "isActive": true
+      }
+    ]
+  }
+}
+```
+
+**Errors**
+
+| Status | Case | message |
+| --- | --- | --- |
+| 400 | Invalid `identifierType` | `BAD_REQUEST: invalid identifierType` |
+| 400 | Unknown `orderBy` field or malformed entry | `BAD_REQUEST: invalid orderBy` |
+| 500 | Internal failure reading identifications | `INTERNAL: ...` |
 
 #### Identify meter
 
-`POST /api/v1/ppob/identifyMeter`
+`POST /api/v1/ppob/customer-identifications/identifyMeter`
 
-Validates an electricity customer/meter number against Letslink and returns the identify core with meter details.
+Validates an electricity customer/meter number against Letslink and returns the identify core with meter details. On a successful full-number identification, a history record is upserted as a **background side effect** (fire-and-forget — the response is never blocked or failed by the history write).
 
 | | |
 | --- | --- |
@@ -209,6 +298,7 @@ Validates an electricity customer/meter number against Letslink and returns the 
 3. Map the Letslink response to the identify core — `identifierType: METER_NUMBER`, `customerId` = submitted `meterNumber`, `details = { customerName, wattage, meterSpecs }` (wattage extracted from meter specs).
 4. Letslink unreachable/erroring → `503 UPSTREAM_UNAVAILABLE`. Meter rejected by Letslink (invalid/inactive) → return `200` with `valid: false` and the reason in `message`.
 5. Otherwise → `200` with `valid: true`.
+6. **Background side effect (only when `valid: true`):** upsert a `customer-identifications` row keyed by `(userId, METER_NUMBER, meterNumber)` — insert on first identify, or update `lastUsedAt` + audit `updated*` on repeat (details unchanged). Failure is logged only; it never changes the response.
 
 **Request**
 
@@ -263,9 +353,9 @@ Validates an electricity customer/meter number against Letslink and returns the 
 
 #### Identify phone number
 
-`POST /api/v1/ppob/identifyPhoneNumber`
+`POST /api/v1/ppob/customer-identifications/identifyPhoneNumber`
 
-Resolves a mobile number to its provider via an in-house prefix lookup against the phone-prefix → provider table — no external call.
+Resolves a mobile number to its provider via an in-house prefix lookup against the phone-prefix → provider table — no external call. The prefix lookup runs for inputs of **at least 4 digits** (the minimum needed to resolve a provider prefix); persistence happens only when the number is **full and valid** (length > 10 and prefix matched) — as a background side effect.
 
 | | |
 | --- | --- |
@@ -274,17 +364,18 @@ Resolves a mobile number to its provider via an in-house prefix lookup against t
 
 **Flow**
 
-1. Reject with `400` if `phoneNumber` is missing/blank.
+1. Reject with `400` if `phoneNumber` is missing/blank, or shorter than 4 digits.
 2. Look up the number's prefix in the phone-prefix → provider table (longest-match).
 3. Match → `valid: true`, `identifierType: PHONE_NUMBER`, `customerId` = submitted `phoneNumber`, `details = { providerCode, providerName }`.
 4. No match → `200` with `valid: false` and the reason in `message`.
 5. Internal failure → `500`.
+6. **Background side effect (only when `valid: true` AND the number is full — length > 10):** upsert a `customer-identifications` row keyed by `(userId, PHONE_NUMBER, phoneNumber)` — insert on first identify, or update `lastUsedAt` + audit `updated*` on repeat (details unchanged). Failure is logged only; it never changes the response.
 
 **Request**
 
 | Body fields | Type | Required | Notes |
 | --- | --- | --- | --- |
-| phoneNumber | string | yes | The phone number entered for identification |
+| phoneNumber | string | yes | The phone number entered for identification (minimum 4 digits) |
 
 **Response**
 
@@ -325,7 +416,7 @@ Resolves a mobile number to its provider via an in-house prefix lookup against t
 | Status | Case | message |
 | --- | --- | --- |
 | 200 + `valid: false` | Unrecognized number prefix | reason |
-| 400 | Missing/blank `phoneNumber` | `BAD_REQUEST: phoneNumber is required` |
+| 400 | Missing/blank `phoneNumber`, or fewer than 4 digits | `BAD_REQUEST: phoneNumber must be at least 4 digits` |
 | 500 | Internal failure | `INTERNAL: ...` |
 
 ### Resource: PPOB product catalog
