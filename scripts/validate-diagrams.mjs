@@ -23,8 +23,15 @@ const die = (msg) => {
 let JSDOM;
 try {
   ({ JSDOM } = await import('jsdom'));
-} catch {
-  die('Missing dev dependencies — run `npm install` first (installs mermaid + jsdom).');
+} catch (e) {
+  die(
+    `Could not load jsdom: ${e?.message ?? e}\n` +
+      '— run `npm install` (dev dependencies not present?).\n' +
+      '— jsdom 30 requires Node >= 22.13 (require(ESM)); check `node --version`.' +
+      (process.version.startsWith('v18') || process.version.startsWith('v20')
+        ? ` (current: ${process.version})`
+        : '')
+  );
 }
 
 // --- minimal DOM for the mermaid parser (must exist BEFORE mermaid loads:
