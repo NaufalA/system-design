@@ -189,7 +189,7 @@ GET /api/v1/ppob/catalogues/electricity-token
 
 ### Resource: customer identifications
 
-A persistent collection of the customer's previously identified identifiers (meter numbers / phone numbers), keyed by `(userId, identifierType, customerId)`. Entries are upserted as a **background side effect** of a successful, full-number identification (fire-and-forget — the identify response is never blocked or failed by the history write). `details` are stored once on first identify and not updated on repeat (only `lastUsedAt` moves). Identification history is soft-deleted like any other resource; reads default to active rows.
+A persistent collection of the customer's previously identified identifiers (meter numbers / phone numbers), keyed by `(userId, identifierType, customerId)`. Entries are **created only after a successful purchase transaction** (story 04 background chain) — never on identify. `details` are stored from the transaction's identification result and not updated on repeat (only `lastUsedDate` moves). Identification history is soft-deleted like any other resource; reads default to active rows.
 
 #### List customer identifications
 
@@ -207,7 +207,7 @@ Returns the caller's previously identified identifiers, paginated, most-recently
 1. Resolve the caller's internal user id from the request context (passed by the BFF) → missing → `401`.
 2. Read `identifierType` filter (optional) → invalid value → `400`.
 3. Read the customer-identification rows for `userId`, applying the `identifierType` filter and `isActive` filter (`showInactive` relaxes it — honored unconditionally; caller-type restrictions are the BFF's).
-4. Apply `orderBy` if supplied (default `lastUsedAt DESC`); no default order beyond that — database order when `orderBy` is omitted. Slice `page`/`size`; compute `totalRows` and `totalPage`.
+4. Apply `orderBy` if supplied (default `lastUsedDate DESC`); no default order beyond that — database order when `orderBy` is omitted. Slice `page`/`size`; compute `totalRows` and `totalPage`.
 5. Return the wrapper with the paginated `result`.
 
 **Request**
@@ -216,7 +216,7 @@ Returns the caller's previously identified identifiers, paginated, most-recently
 | --- | --- | --- | --- |
 | page | int | 1 | 1-based page index |
 | size | int | 20 | Page size |
-| orderBy | string | `lastUsedAt DESC` | Comma-separated `fieldName ORDER` (`ASC`\|`DESC`); unknown field/malformed → `400` |
+| orderBy | string | `lastUsedDate DESC` | Comma-separated `fieldName ORDER` (`ASC`\|`DESC`); unknown field/malformed → `400` |
 | identifierType | string | — | Filter: `METER_NUMBER` or `PHONE_NUMBER`. Supplied by the BFF from the catalogue's first part |
 | showInactive | bool | false | When `true`, soft-deleted rows are included; honored unconditionally (caller-type restrictions are the BFF's) |
 
@@ -232,7 +232,7 @@ _No path params. No request body._
 | identifierType | string | `METER_NUMBER` or `PHONE_NUMBER` |
 | customerId | string | The meter number / phone number |
 | details | object | Typed details from the last successful identify (meter: `{customerName, wattage, meterSpecs}`; phone: `{providerCode, providerName}`) |
-| lastUsedAt | string | ISO 8601 (timestamptz) — updated on every successful full-number identify |
+| lastUsedDate | string | ISO 8601 (timestamptz) — updated on every successful transaction that uses this identifier |
 | createdDate | string | ISO 8601 (timestamptz) |
 | updatedDate | string | ISO 8601 (timestamptz) |
 | createdBy | string | Actor (≤ 50 chars) — the `userId` |
@@ -242,7 +242,7 @@ _No path params. No request body._
 **Example**
 
 ```
-GET /api/v1/ppob/customer-identifications?identifierType=METER_NUMBER&page=1&size=20&orderBy=lastUsedAt DESC
+GET /api/v1/ppob/customer-identifications?identifierType=METER_NUMBER&page=1&size=20&orderBy=lastUsedDate DESC
 ```
 
 ```json
@@ -260,7 +260,7 @@ GET /api/v1/ppob/customer-identifications?identifierType=METER_NUMBER&page=1&siz
         "identifierType": "METER_NUMBER",
         "customerId": "5432176543",
         "details": { "customerName": "SKU. 5432176543", "wattage": 2200, "meterSpecs": { "power": "2200VA" } },
-        "lastUsedAt": "2026-10-20T09:15:00Z",
+        "lastUsedDate": "2026-10-20T09:15:00Z",
         "createdDate": "2026-10-01T03:00:00Z",
         "updatedDate": "2026-10-20T09:15:00Z",
         "createdBy": "user-123",
@@ -280,77 +280,6 @@ GET /api/v1/ppob/customer-identifications?identifierType=METER_NUMBER&page=1&siz
 | 400 | Unknown `orderBy` field or malformed entry | `BAD_REQUEST: invalid orderBy` |
 | 500 | Internal failure reading identifications | `INTERNAL: ...` |
 
-#### Identify meter
-
-`POST /api/v1/ppob/customer-identifications/identifyMeter`
-
-Validates an electricity customer/meter number against Letslink and returns the identify core with meter details. On a successful full-number identification, a history record is upserted as a **background side effect** (fire-and-forget — the response is never blocked or failed by the history write).
-
-| | |
-| --- | --- |
-| Derived from story | 02-browse-electricity-token; 04-buy-with-bnpl |
-| Auth | service-to-service |
-
-**Flow**
-
-1. Reject with `400` if `meterNumber` is missing/blank.
-2. Forward the meter number to **Letslink** customer/meter validation (external REST).
-3. Map the Letslink response to the identify core — `identifierType: METER_NUMBER`, `customerId` = submitted `meterNumber`, `details = { customerName, wattage, meterSpecs }` (wattage extracted from meter specs).
-4. Letslink unreachable/erroring → `503 UPSTREAM_UNAVAILABLE`. Meter rejected by Letslink (invalid/inactive) → return `200` with `valid: false` and the reason in `message`.
-5. Otherwise → `200` with `valid: true`.
-6. **Background side effect (only when `valid: true`):** upsert a `customer-identifications` row keyed by `(userId, METER_NUMBER, meterNumber)` — insert on first identify, or update `lastUsedAt` + audit `updated*` on repeat (details unchanged). Failure is logged only; it never changes the response.
-
-**Request**
-
-| Body fields | Type | Required | Notes |
-| --- | --- | --- | --- |
-| meterNumber | string | yes | The meter/customer ID entered for identification |
-
-**Response**
-
-`result` is the identify core plus meter `details`:
-
-| Field | Type | Notes |
-| --- | --- | --- |
-| valid | bool | The checkout gate. `false` → reason in `message`, `details` may be empty |
-| identifierType | string | Constant `METER_NUMBER` |
-| customerId | string | Echo of the submitted `meterNumber` |
-| details.customerName | string | Customer identity as known by Letslink |
-| details.wattage | int | Meter wattage — carried into checkout and passed to Letslink at purchase, where the provider backend mints the token value (kWh) for that wattage. **Not** a product-list filter |
-| details.meterSpecs | object | Meter specifications (e.g. `power`, `installationDate`) |
-
-**Example**
-
-```json
-{ "meterNumber": "5432176543" }
-```
-
-```json
-{
-  "response": 200,
-  "message": "Customer identified successfully",
-  "result": {
-    "valid": true,
-    "identifierType": "METER_NUMBER",
-    "customerId": "5432176543",
-    "details": {
-      "customerName": "SKU. 5432176543",
-      "wattage": 2200,
-      "meterSpecs": { "power": "2200VA", "installationDate": "2019-04-01" }
-    }
-  }
-}
-```
-
-**Errors**
-
-| Status | Case | message |
-| --- | --- | --- |
-| 200 + `valid: false` | Rejected meter (invalid/inactive) | reason |
-| 400 | Missing/blank `meterNumber` | `BAD_REQUEST: meterNumber is required` |
-| 503 | Letslink unavailable | `UPSTREAM_UNAVAILABLE: ...` |
-| 500 | Internal failure | `INTERNAL: ...` |
-
 #### Identify phone number
 
 `POST /api/v1/ppob/customer-identifications/identifyPhoneNumber`
@@ -369,7 +298,7 @@ Resolves a mobile number to its provider via an in-house prefix lookup against t
 3. Match → `valid: true`, `identifierType: PHONE_NUMBER`, `customerId` = submitted `phoneNumber`, `details = { providerCode, providerName }`.
 4. No match → `200` with `valid: false` and the reason in `message`.
 5. Internal failure → `500`.
-6. **Background side effect (only when `valid: true` AND the number is full — length > 10):** upsert a `customer-identifications` row keyed by `(userId, PHONE_NUMBER, phoneNumber)` — insert on first identify, or update `lastUsedAt` + audit `updated*` on repeat (details unchanged). Failure is logged only; it never changes the response.
+_No background history write here — identification history is recorded only after a successful purchase transaction (story 04 background chain), not on identify._
 
 **Request**
 

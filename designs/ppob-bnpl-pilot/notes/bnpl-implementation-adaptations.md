@@ -158,3 +158,20 @@ Working notes on how **existing `bnpl-service` endpoints** behave and how the PP
 
 - ~~Submitted-order expiry: 5 vs 15 min~~ — **resolved: 15 minutes**, starting at submit. See "Expiry (settled)" above.
 - Remaining endpoints to discuss: **Get Important Information**, **Submit Transaction**.
+
+## Customer Identification History — Revision
+
+**Constraint 1:** No eager recording. `customer-identifications` rows are created **only after a successful purchase transaction** (story 04 background chain), never on identify.
+
+**Constraint 2:** Letslink meter identification is **not a separate endpoint** — it happens during the ppob inquiry (purchase) request to Letslink's inquiry endpoint. Invalid meter → error response at purchase time.
+
+**Decisions:**
+- **Meters:** no separate identification during browsing. The customer enters/selects a meter number (no validation, no wattage display). Validation + wattage resolution happen during the purchase inquiry (story 04). `identifyMeter` ppob endpoint **removed**.
+- **Phones:** in-house prefix lookup stays during browsing (cheap, needed for product filtering). History recorded on success only.
+- **BFF `/identify`:** only supports `mobile-*` (phone). `electricity-*` → `400` (identification not supported for this catalogue — meter identification happens during the purchase inquiry).
+- **History recording on failed transactions:** never created (only on success).
+- **`lastUsedDate`** = last successful transaction time. Selecting a previous identifier without transacting does not update it.
+- **Story 02 (electricity):** no checkout gate from identification; meter number carried into checkout. Wattage shown post-purchase (token code, story 05).
+- **Story 04 background chain:** re-identification = Letslink inquiry for electricity (validates meter + returns wattage) + in-house prefix lookup for data; on success, upsert `customer-identifications` row as a background side effect (fire-and-forget).
+
+**Impact on the committed `customer-identifications` collection:** the collection, list endpoint, and upsert key are unchanged; only the *trigger* of the upsert moved (from identify to purchase success) and the `identifyMeter` custom method was removed.

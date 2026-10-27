@@ -1,6 +1,6 @@
 # API Design — Story 02: Browse Electricity Token Catalog
 
-The product list and the identification call are **decoupled**: the list is fetched immediately on screen open (no identification needed — price is identical for all customers), while identification (`POST /ppob/catalogues/electricity-token/identify`, shared across catalogues) is a separate step that must succeed before checkout (story 04) — it never gates or filters the list.
+The product list and the **customer ID (meter number) input** are **decoupled**: the list is fetched immediately on screen open (no filter, no identification needed — price is identical for all customers). There is **no separate Letslink identification during browsing** — meter validation and wattage resolution happen during the purchase inquiry (story 04). The screen also shows the customer's **previously identified meter numbers** (from customer-identification history) so the customer can re-select one; selecting just fills the input (no validation).
 
 ## Sequence
 
@@ -20,20 +20,11 @@ sequenceDiagram
     bff-->>app: 200 OK result.data[] (audit fields stripped)
 
     app->>bff: GET /bff-mobile/v1/ppob/catalogues/electricity-token/customer-identifications?page&size
-    bff->>ppob: GET /api/v1/ppob/customer-identifications?identifierType=METER_NUMBER&page&size&orderBy=lastUsedAt DESC
+    bff->>ppob: GET /api/v1/ppob/customer-identifications?identifierType=METER_NUMBER&page&size&orderBy=lastUsedDate DESC
     ppob-->>bff: previous identifications (meter numbers, most-recent first)
     bff-->>app: 200 OK result.data[] (audit fields stripped)
 
-    Note over app: list rendered immediately, list of previous meters shown, customer enters/selects a meter number
-
-    app->>bff: POST /bff-mobile/v1/ppob/catalogues/electricity-token/identify { customerId }
-    bff->>bff: validate JWT, route: first part "electricity" → meter
-    bff->>ppob: POST /api/v1/ppob/customer-identifications/identifyMeter { meterNumber }
-    ppob->>ll: customer/meter validation
-    ll-->>ppob: customer identity + meter specs (incl. wattage)
-    ppob-->>bff: 200 core { valid, identifierType, customerId, details }
-    bff-->>app: 200 OK core + catalogueType
-    Note over app: identification passed — checkout now allowed (story 04)
+    Note over app: list rendered immediately, list of previous meters shown, customer enters/selects a meter number (no validation during browsing)
 ```
 
 ## Interaction Flow
@@ -43,30 +34,24 @@ sequenceDiagram
 | 1 | mobile-app | bff-mobile | `GET /bff-mobile/v1/ppob/catalogues/electricity-token/products?page&size` (on screen open) | Sync | `api/applications/bff-mobile.md#list-products` |
 | 2 | bff-mobile | ppob-service | `GET /api/v1/ppob/catalogues/electricity-token/products?page&size&orderBy=displayOrder ASC` | Sync | `api/applications/ppob-service.md#list-products` |
 | 3 | mobile-app | bff-mobile | `GET /bff-mobile/v1/ppob/catalogues/electricity-token/customer-identifications?page&size` (on screen open) | Sync | `api/applications/bff-mobile.md#list-customer-identifications` |
-| 4 | bff-mobile | ppob-service | `GET /api/v1/ppob/customer-identifications?identifierType=METER_NUMBER&page&size&orderBy=lastUsedAt DESC` | Sync | `api/applications/ppob-service.md#list-customer-identifications` |
-| 5 | mobile-app | bff-mobile | `POST /bff-mobile/v1/ppob/catalogues/electricity-token/identify` body `{ customerId }` (when customer enters/selects a meter number) | Sync | `api/applications/bff-mobile.md#identify-customer` |
-| 6 | bff-mobile | ppob-service | `POST /api/v1/ppob/customer-identifications/identifyMeter` body `{ meterNumber }` (routed by first part `electricity`) | Sync | `api/applications/ppob-service.md#identify-meter` |
-| 7 | ppob-service | Letslink | Customer/meter validation (external REST) | Sync | `api/applications/ppob-service.md#resources-used` |
+| 4 | bff-mobile | ppob-service | `GET /api/v1/ppob/customer-identifications?identifierType=METER_NUMBER&page&size&orderBy=lastUsedDate DESC` | Sync | `api/applications/ppob-service.md#list-customer-identifications` |
 | — | Letslink | ppob-service | Product feed sync (periodic) | Async (scheduled) | `api/applications/ppob-service.md#resources-used` |
 
 ## Data Passed Between Steps
 
 - Step 1 → 2: `catalogueType` path segment passed through verbatim (no id mapping); `bff-mobile` forces active-only (never forwards `showInactive`) and injects the screen's fixed ordering (`orderBy=displayOrder ASC` — microservices have no default order; the app cannot supply `orderBy`).
 - Step 2 → 1: microservice-paginated `result` (`page`, `size`, `totalRows`, `totalPage`, `data`); `bff-mobile` strips the audit fields (passes `isActive` only) and passes it through. All active products are returned regardless of wattage — **never filtered** (price is identical per product; wattage determines the token value minted at fulfillment, visible only post-purchase).
-- Step 3 → 4: `identifierType = METER_NUMBER` derived by the BFF from the catalogue's first part; `bff-mobile` forwards `page`/`size` and injects `orderBy=lastUsedAt DESC`.
-- Step 4 → 3: paginated list of the caller's previous meter identifications (audit fields stripped, `lastUsedAt` kept), most-recent first; selecting one re-runs identify (which upserts `lastUsedAt` as a background side effect).
-- Step 5 → 6: BFF routes on the first part of `catalogueType` (`electricity` → meter identification) and translates `customerId` → typed `meterNumber`.
-- Step 6 → 5: `ppob-service` returns the identify core `{ valid, identifierType: METER_NUMBER, customerId, details: { customerName, wattage, meterSpecs } }`; `bff-mobile` adds `catalogueType` and passes through. `wattage` is **carried into checkout (story 04) and passed to Letslink at purchase** — it does not filter the list. On a successful full-number identify, a history row is upserted in the background (fire-and-forget) — the response is never blocked or failed by it.
+- Step 3 → 4: `identifierType = METER_NUMBER` derived by the BFF from the catalogue's first part; `bff-mobile` forwards `page`/`size` and injects `orderBy=lastUsedDate DESC`.
+- Step 4 → 3: paginated list of the caller's previous meter identifications (audit fields stripped, `lastUsedDate` kept), most-recent first; selecting one just fills the meter number input (no validation during browsing). History is recorded only after a successful purchase transaction (story 04).
 
 ## Failure & Consistency Behavior
 
-- **Identification is a checkout gate, not a list gate:** steps 1–2 run immediately regardless of step 3's outcome; checkout (story 04) is never reached without `valid: true` this session. Invalid meter / Letslink rejection → `200` with `valid: false` + reason, the app keeps the list visible but blocks checkout and lets the customer retry the input.
-- **Wattage mismatch at purchase:** story 04 re-runs identification server-side before the Letslink purchase and passes the derived wattage — a client-supplied `wattage` is never trusted.
+- **Identification is no longer a separate step during browsing** — the customer enters a meter number (or selects a previous one) freely; validation + wattage resolution happen during the purchase inquiry (story 04). The list stays visible regardless.
+- **Wattage is not shown at browse time** — it is resolved by Letslink during the purchase inquiry and appears in the token code after fulfillment (story 05).
 - **Token value vs price:** the price shown here is the same for all customers; the kWh value delivered depends on meter wattage and is determined by the provider backend — it appears only in the token code after fulfillment (story 05), never at browse time.
-- **Letslink validation unavailable** → `503` wrapper; the customer can still browse (list already loaded) but cannot proceed to checkout.
 - **Feed sync stale/unavailable** → `ppob-service` serves last-known feed data with current overrides (catalog never blocks on Letslink); sync failure is logged/alerted.
 - **`ppob-service` unavailable/5xx** on products → `bff-mobile` returns wrapper error (`UPSTREAM_UNAVAILABLE`), app shows retry state.
 - **Catalogue has no active products** (all disabled via story 07) → `200` with empty `result.data`, `totalRows: 0`; app shows "temporarily unavailable".
 - **Unknown `catalogueType`** → `404` wrapper error on both endpoints.
-- **Price consistency:** browse price is advisory; the price and the identification are re-validated server-side in the story 04 submission chain.
+- **Price consistency:** browse price is advisory; re-validated server-side in the story 04 submission chain.
 - **JWT invalid** → `401`, `ppob-service` not called.

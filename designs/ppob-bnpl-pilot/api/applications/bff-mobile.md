@@ -39,7 +39,7 @@ The gateway terminates TLS and routes `/bff-mobile/**` to this BFF; the path con
 | PPOB catalogue configuration | ppob-service | Sync REST `GET /api/v1/ppob/catalogues` (`catalogueType` passed through — no id mapping) | 01 |
 | PPOB customer identifications | ppob-service | Sync REST `GET /api/v1/ppob/customer-identifications` (identifierType derived from catalogue first part; audit fields stripped) | 02, 03 |
 | PPOB product catalog | ppob-service | Sync REST `GET /api/v1/ppob/catalogues/{catalogueType}/products` | 02, 03 |
-| Meter identification | ppob-service | Sync REST `POST /api/v1/ppob/customer-identifications/identifyMeter` (Letslink validation) | 02 |
+| Meter identification | ppob-service | (removed — meter identification now happens during the purchase inquiry to Letslink, not during browsing) | — |
 | Phone number identification | ppob-service | Sync REST `POST /api/v1/ppob/customer-identifications/identifyPhoneNumber` (in-house prefix lookup) | 03 |
 
 ## Endpoints
@@ -145,8 +145,8 @@ Returns the caller's previously identified identifiers for the catalogue's ident
 1. Validate JWT → invalid/expired → `401` (downstream not called).
 2. Resolve `catalogueType` → unknown → `404`.
 3. Derive `identifierType` from the first part of `catalogueType` (`electricity-*` → `METER_NUMBER`, `mobile-*` → `PHONE_NUMBER`); unsupported first part → `400`.
-4. Forward `page`/`size` to `ppob-service` `GET /api/v1/ppob/customer-identifications` with `identifierType` and the screen's ordering injected as `orderBy=lastUsedAt DESC` — active-only is forced (`showInactive` is never forwarded).
-5. Return the upstream paginated `result` (audit fields stripped — `lastUsedAt` is kept).
+4. Forward `page`/`size` to `ppob-service` `GET /api/v1/ppob/customer-identifications` with `identifierType` and the screen's ordering injected as `orderBy=lastUsedDate DESC` — active-only is forced (`showInactive` is never forwarded).
+5. Return the upstream paginated `result` (audit fields stripped — `lastUsedDate` is kept).
 6. Upstream unavailable/5xx → `503 UPSTREAM_UNAVAILABLE`; upstream `404` (unknown catalogue) → passed through.
 
 **Request**
@@ -164,7 +164,7 @@ _No request body. No `showInactive`. No `orderBy` — this screen's ordering is 
 
 **Response**
 
-`result` is the paginated shape (`page`, `size`, `totalRows`, `totalPage`, `data[]`); each identification item (upstream audit fields stripped — only `isActive` and `lastUsedAt` are passed through):
+`result` is the paginated shape (`page`, `size`, `totalRows`, `totalPage`, `data[]`); each identification item (upstream audit fields stripped — only `isActive` and `lastUsedDate` are passed through):
 
 | Field | Type | Notes |
 | --- | --- | --- |
@@ -172,7 +172,7 @@ _No request body. No `showInactive`. No `orderBy` — this screen's ordering is 
 | identifierType | string | `METER_NUMBER` or `PHONE_NUMBER` |
 | customerId | string | The meter number / phone number |
 | details | object | Typed details from the last successful identify (meter: `{customerName, wattage, meterSpecs}`; phone: `{providerCode, providerName}`) |
-| lastUsedAt | string | ISO 8601 — when the identifier was last used |
+| lastUsedDate | string | ISO 8601 — when the identifier was last used |
 | isActive | bool | Always `true` here |
 
 **Example**
@@ -196,7 +196,7 @@ GET /bff-mobile/v1/ppob/catalogues/electricity-token/customer-identifications?pa
         "identifierType": "METER_NUMBER",
         "customerId": "5432176543",
         "details": { "customerName": "SKU. 5432176543", "wattage": 2200, "meterSpecs": { "power": "2200VA" } },
-        "lastUsedAt": "2026-10-20T09:15:00Z",
+        "lastUsedDate": "2026-10-20T09:15:00Z",
         "isActive": true
       }
     ]
@@ -225,7 +225,7 @@ Identifies the customer for a catalogue by interpreting `customerId` per catalog
 
 | | |
 | --- | --- |
-| Derived from story | 02-browse-electricity-token; 03-browse-data-package |
+| Derived from story | 03-browse-data-package |
 | Auth | Bearer JWT (customer) |
 
 **Flow**
@@ -234,9 +234,8 @@ Identifies the customer for a catalogue by interpreting `customerId` per catalog
 2. Resolve `catalogueType` → unknown → `404`.
 3. Reject with `400` if `customerId` is missing/blank.
 4. Interpret `customerId` by the first part of `catalogueType` and forward with the typed field:
-   - `electricity-*` (e.g. `electricity-token`) → `meterNumber` → `POST /api/v1/ppob/customer-identifications/identifyMeter` (Letslink validation);
    - `mobile-*` (e.g. `mobile-data`) → `phoneNumber` → `POST /api/v1/ppob/customer-identifications/identifyPhoneNumber` (in-house prefix lookup);
-   - any other first part → `400` (no identification supported for that catalogue).
+   - any other first part (incl. `electricity-*`) → `400` (identification is not supported for this catalogue — meter identification happens during the purchase inquiry, not during browsing).
 5. Take `valid`, `identifierType`, `customerId`, `details` from the upstream response; add `catalogueType`.
 6. Upstream unavailable/5xx → `503 UPSTREAM_UNAVAILABLE`.
 

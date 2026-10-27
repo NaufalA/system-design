@@ -40,7 +40,7 @@ All endpoints, both layers:
 
 Customer identification (stories 02/03) is exposed through **one shared BFF endpoint per catalogue** (`POST /ppob/catalogues/{catalogueType}/identify`, body `{ customerId }`); the underlying `ppob-service` method is per identifier type. To stay consistent across types, every identify response (both layers) shares a **fixed core + typed `details`**:
 
-- Core: `{ valid, identifierType, customerId }` — `valid` (the gate), `identifierType` (`METER_NUMBER` | `PHONE_NUMBER`), `customerId` (echo of the submitted value). The **BFF adds `catalogueType`** to the core; the internal methods don't carry it (one method may serve several catalogues, e.g. `identifyMeter` for `electricity-token` and a future `electricity-postpaid`).
+- Core: `{ valid, identifierType, customerId }` — `valid` (the gate), `identifierType` (`METER_NUMBER` | `PHONE_NUMBER`), `customerId` (echo of the submitted value). The **BFF adds `catalogueType`** to the core; the internal methods don't carry it (one method may serve several catalogues, e.g. `identifyPhoneNumber` for `mobile-data` and a future `mobile-*` catalogue).
 - `details` schema is per `identifierType`:
   - `METER_NUMBER`: `{ customerName, wattage, meterSpecs }` — `wattage` is carried into checkout and passed to Letslink at purchase (mints the token value); it is not a list filter.
   - `PHONE_NUMBER`: `{ providerCode, providerName }` — `providerCode` filters the `mobile-data` product list.
@@ -80,5 +80,5 @@ Customer identification (stories 02/03) is exposed through **one shared BFF endp
 
 Client-supplied results are **advisory, never authoritative**:
 
-- Identification results (`wattage`, `providerCode`), browse-time prices, and filters are fine for display/filtering, but the **story 04 background chain re-runs identification (`identifyMeter` / `identifyPhoneNumber`) and price validation server-side before the Letslink purchase** — a client-supplied value never authorizes a purchase or refund.
+- Identification results (`wattage`, `providerCode`), browse-time prices, and filters are fine for display/filtering, but the **story 04 background chain re-runs identification (Letslink inquiry for electricity; in-house prefix lookup for data) and price validation server-side before the Letslink purchase** — a client-supplied value never authorizes a purchase or refund.
 - Consequence: browse endpoints state this once (here + the endpoint's contract note); per-story docs describe *when* re-validation runs, not *why*.
